@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Adicione o código abaixo para remover as setas */
+
+/* Remove as setas dos inputs de número no Chrome, Safari, Edge, Opera */
+input::-webkit-outer-spin-button,
+input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Remove as setas dos inputs de número no Firefox */
+input[type=number] {
+  -moz-appearance: textfield;
+}
