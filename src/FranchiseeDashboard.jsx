@@ -1,8 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Fragment } from 'react';
 import { db } from './firebaseConfig';
 import { doc, getDoc, updateDoc, setDoc, addDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { CurrencyInput } from './CurrencyInput';
+import { formatCurrency } from './utils/formatters';
+import AgentPerformanceDetail from './AgentPerformanceDetail';
 
+// Ícones
 const LogoutIcon = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
 );
@@ -11,21 +14,25 @@ const CopyIcon = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
 );
 
+
 export default function FranchiseeDashboard({ user, userProfile, handleLogout }) {
-    const [activeTab, setActiveTab] = useState('agents');
+    const [activeTab, setActiveTab] = useState('team_performance');
+    const [selectedPeriod, setSelectedPeriod] = useState("2025-10");
     const [franchiseData, setFranchiseData] = useState(null);
     const [agentsList, setAgentsList] = useState([]);
     const [allPlans, setAllPlans] = useState({});
-    const [selectedPeriod, setSelectedPeriod] = useState("2025-09");
     const [inviteEmail, setInviteEmail] = useState('');
     const [newKpiName, setNewKpiName] = useState('');
     const [isLoading, setIsLoading] = useState(true);
     const [generatedLink, setGeneratedLink] = useState('');
+    const [teamPerformanceData, setTeamPerformanceData] = useState([]);
+    const [expandedAgentId, setExpandedAgentId] = useState(null);
 
     useEffect(() => {
         const fetchData = async () => {
             if (!userProfile || !userProfile.idFranquia) return;
             setIsLoading(true);
+            setTeamPerformanceData([]);
             const franchiseId = userProfile.idFranquia;
             try {
                 const franchiseDocRef = doc(db, "franquias", franchiseId);
@@ -36,7 +43,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                 const querySnapshot = await getDocs(usersQuery);
                 const agents = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 setAgentsList(agents);
-                
+
                 const planDocRef = doc(db, "franquias", franchiseId, "planos", selectedPeriod);
                 const planDocSnap = await getDoc(planDocRef);
                 if (planDocSnap.exists()) {
@@ -52,6 +59,97 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
         };
         fetchData();
     }, [userProfile, selectedPeriod]);
+
+    useEffect(() => {
+        const calculateTeamPerformance = async () => {
+            const currentPlan = allPlans[selectedPeriod];
+            
+            if (agentsList.length === 0 || !franchiseData || !currentPlan) {
+                setTeamPerformanceData([]);
+                return;
+            }
+
+            const agentIds = agentsList.map(a => a.id);
+            if (agentIds.length === 0) return;
+
+            const date = new Date(`${selectedPeriod}-02T00:00:00`);
+            const currentMonth = date.toISOString().slice(0, 7);
+            date.setMonth(date.getMonth() - 1);
+            const previousMonth = date.toISOString().slice(0, 7);
+
+            const m0Query = query(collection(db, "clientes"), where("agentId", "in", agentIds), where("monthAdded", "==", currentMonth));
+            const m1Query = query(collection(db, "clientes"), where("agentId", "in", agentIds), where("monthAdded", "==", previousMonth), where("status", "==", "active"));
+            
+            const [m0Snapshot, m1Snapshot] = await Promise.all([getDocs(m0Query), getDocs(m1Query)]);
+            
+            const allM0Clients = m0Snapshot.docs.map(doc => doc.data());
+            const allM1Clients = m1Snapshot.docs.map(doc => doc.data());
+
+            const performanceData = agentsList.map(agent => {
+                const agentPlan = currentPlan.agents?.find(p => p.id === agent.id) || {};
+                const goals = agentPlan.goals || {};
+                
+                const agentM0Clients = allM0Clients.filter(c => c.agentId === agent.id);
+                const agentM1Clients = allM1Clients.filter(c => c.agentId === agent.id);
+
+                const performance = {};
+                performance.novos_ativos = agentM0Clients.filter(c => c.status === 'active').length;
+                
+                const totalTpvTransacionado = agentM1Clients.reduce((sum, client) => sum + (client.currentTPV || 0), 0);
+                const totalTpvAcordado = agentM1Clients.reduce((sum, client) => sum + (client.agreedTPV || 0), 0);
+                
+                performance.tpv_transacionado = totalTpvTransacionado;
+                performance.migracao = totalTpvAcordado > 0 ? (totalTpvTransacionado / totalTpvAcordado) * 100 : 0;
+
+                let estimatedRV = 0;
+                const { rvReference } = agentPlan;
+                const { kpis, regrasRV } = franchiseData;
+                if(rvReference && kpis && regrasRV){
+                    kpis.forEach(kpi => {
+                        const achieved = performance[kpi.id] || 0;
+                        const goal = goals[kpi.id] || 0;
+                        let achievedPercent = 0;
+                        let finalPercentForRV = 0;
+
+                        if (kpi.id === 'migracao') {
+                            const migrationTriggerValue = regrasRV.triggers?.migracao_individual_percent || 70;
+                            const minClientsTriggerPercent = regrasRV.triggers?.[kpi.id] || 50;
+                            const successfulMigrators = agentM1Clients.filter(c => c.agreedTPV > 0 && ((c.currentTPV / c.agreedTPV) * 100) >= migrationTriggerValue).length;
+                            const percentOfClientsMigrated = agentM1Clients.length > 0 ? (successfulMigrators / agentM1Clients.length) * 100 : 0;
+                            
+                            if (percentOfClientsMigrated >= minClientsTriggerPercent) {
+                                achievedPercent = achieved;
+                                finalPercentForRV = Math.min(achievedPercent, (regrasRV.caps?.[kpi.id] || 100));
+                            }
+                        } else {
+                            achievedPercent = goal > 0 ? (achieved / goal) * 100 : 0;
+                            if (achievedPercent >= (regrasRV.triggers?.[kpi.id] || 0)) {
+                                finalPercentForRV = Math.min(achievedPercent, (regrasRV.caps?.[kpi.id] || 100));
+                            }
+                        }
+                        estimatedRV += (rvReference * ((regrasRV.weights?.[kpi.id] || 0) / 100)) * (finalPercentForRV / 100);
+                    });
+                }
+                
+                return {
+                    agentId: agent.id,
+                    agentName: agent.nome,
+                    performance,
+                    goals,
+                    estimatedRV,
+                    statusFechamento: agentPlan.statusFechamento || 'aberto',
+                };
+            });
+
+            setTeamPerformanceData(performanceData);
+        };
+
+        calculateTeamPerformance();
+    }, [agentsList, allPlans, franchiseData, selectedPeriod]);
+    
+    const handleToggleExpand = (agentId) => {
+        setExpandedAgentId(prevId => (prevId === agentId ? null : agentId));
+    };
 
     const handleGenerateInviteLink = async () => {
         if (!inviteEmail || !inviteEmail.includes('@')) {
@@ -80,18 +178,33 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
             alert("Link copiado para a área de transferência!");
         });
     };
+    
+    const handleAgentDataChange = async (agentId, field, value) => {
+        setAgentsList(prevAgents =>
+            prevAgents.map(agent =>
+                agent.id === agentId ? { ...agent, [field]: value } : agent
+            )
+        );
 
-    const handleAgentDataChange = (agentId, field, value) => {
-        console.log(`Salvando: Agente ${agentId}, Campo ${field}, Valor ${value}`);
+        try {
+            const agentDocRef = doc(db, "users", agentId);
+            await updateDoc(agentDocRef, {
+                [field]: value
+            });
+            console.log(`Campo '${field}' do agente ${agentId} atualizado para '${value}'`);
+        } catch (error) {
+            console.error("Erro ao atualizar dados do agente:", error);
+            alert("Ocorreu um erro ao salvar a alteração. Por favor, tente novamente.");
+        }
     };
     
     const handleRuleChange = (ruleType, kpiId, value) => {
         const updatedValue = value === '' ? '' : Number(value);
         setFranchiseData(prevData => {
             const newData = JSON.parse(JSON.stringify(prevData));
-            if (newData.regrasRV && newData.regrasRV[ruleType]) {
-                newData.regrasRV[ruleType][kpiId] = updatedValue;
-            }
+            if (!newData.regrasRV) newData.regrasRV = {};
+            if (!newData.regrasRV[ruleType]) newData.regrasRV[ruleType] = {};
+            newData.regrasRV[ruleType][kpiId] = updatedValue;
             return newData;
         });
     };
@@ -111,7 +224,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                 agentPlan = { id: agentId, name: agentDetails.nome, goals: {} };
                 newPlans[selectedPeriod].agents.push(agentPlan);
             }
-            const updatedValue = isGoal ? (value === '' ? '' : Number(value)) : value;
+            const updatedValue = typeof value === 'number' ? value : (value === '' ? '' : Number(value));
             if (isGoal) {
                 if (!agentPlan.goals) agentPlan.goals = {};
                 agentPlan.goals[field] = updatedValue;
@@ -130,11 +243,15 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
             const franchiseDocRef = doc(db, "franquias", userProfile.idFranquia);
             
             if (section === 'regrasRV') {
-                const rulesToSave = JSON.parse(JSON.stringify(franchiseData.regrasRV));
-                Object.keys(rulesToSave).forEach(ruleType => {
-                    Object.keys(rulesToSave[ruleType]).forEach(kpiId => {
-                        rulesToSave[ruleType][kpiId] = Number(rulesToSave[ruleType][kpiId]) || 0;
-                    });
+                const rulesToSave = JSON.parse(JSON.stringify(franchiseData.regrasRV || {}));
+                if(!rulesToSave.weights) rulesToSave.weights = {};
+                if(!rulesToSave.triggers) rulesToSave.triggers = {};
+                if(!rulesToSave.caps) rulesToSave.caps = {};
+
+                franchiseData.kpis.forEach(kpi => {
+                    rulesToSave.weights[kpi.id] = Number(rulesToSave.weights[kpi.id]) || 0;
+                    rulesToSave.triggers[kpi.id] = Number(rulesToSave.triggers[kpi.id]) || 0;
+                    rulesToSave.caps[kpi.id] = Number(rulesToSave.caps[kpi.id]) || 0;
                 });
                 await updateDoc(franchiseDocRef, { regrasRV: rulesToSave });
                 alert("Regras de RV salvas com sucesso!");
@@ -142,7 +259,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
 
             if (section === 'planning') {
                 const planData = allPlans[selectedPeriod] || { agents: [] };
-                planData.agents.forEach(agent => {
+                (planData.agents || []).forEach(agent => {
                     agent.rvReference = Number(agent.rvReference) || 0;
                     if (agent.goals) {
                         Object.keys(agent.goals).forEach(kpiId => {
@@ -163,11 +280,121 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
         }
     };
 
+    const handleDevolver = async (agentId) => {
+        const motivo = prompt("Por favor, insira o motivo da devolução para que o agente possa corrigir:");
+        if (motivo && motivo.trim() !== "") {
+            const planDocRef = doc(db, "franquias", userProfile.idFranquia, "planos", selectedPeriod);
+            try {
+                const planSnap = await getDoc(planDocRef);
+                if (planSnap.exists()) {
+                    const planData = planSnap.data();
+                    const updatedAgents = planData.agents.map(agent => {
+                        if (agent.id === agentId) {
+                            return { ...agent, statusFechamento: 'em_correcao', comentarioRevisao: motivo };
+                        }
+                        return agent;
+                    });
+                    await updateDoc(planDocRef, { agents: updatedAgents });
+                    alert("Mês devolvido para correção.");
+                    setAllPlans(prev => ({...prev, [selectedPeriod]: {...planData, agents: updatedAgents }}));
+                }
+            } catch (error) {
+                console.error("Erro ao devolver mês:", error);
+                alert("Não foi possível devolver para correção.");
+            }
+        }
+    };
+
+    const handleAprovar = (agentId) => {
+        if (window.confirm("Tem a certeza que deseja aprovar e fechar o mês para este agente? Esta ação é permanente e guardará os resultados no histórico.")) {
+            console.log(`Aprovando agente ${agentId}... Próximo passo: chamar a Cloud Function.`);
+            alert("Funcionalidade de aprovação (Cloud Function) a ser implementada no próximo passo.");
+        }
+    };
+
     const renderContent = () => {
-        if (isLoading) return <div className="text-center p-8">Carregando dados da franquia...</div>;
-        if (!franchiseData) return <div className="text-center p-8 text-red-500">Não foi possível carregar os dados da franquia.</div>;
+        if (isLoading) return <div className="p-8 text-center">Carregando dados...</div>;
+        if (!franchiseData) return <div className="p-8 text-center text-red-500">Não foi possível carregar os dados da franquia.</div>;
         
+        const activeAgentsData = teamPerformanceData.filter(d => {
+            const agentInfo = agentsList.find(a => a.id === d.agentId);
+            return agentInfo?.status === 'Ativo';
+        });
+
         switch (activeTab) {
+            case 'team_performance':
+            case 'manager_monitoring':
+                const isManagerView = activeTab === 'manager_monitoring';
+                
+                const StatusCell = ({ data }) => {
+                    const status = data.statusFechamento || 'aberto';
+                    
+                    if (status === 'pendente_aprovacao') {
+                        return (
+                            <div className="flex space-x-2">
+                                <button onClick={() => handleAprovar(data.agentId)} className="bg-green-500 text-white px-2 py-1 text-xs font-bold rounded hover:bg-green-600">Aprovar</button>
+                                <button onClick={() => handleDevolver(data.agentId)} className="bg-yellow-500 text-white px-2 py-1 text-xs font-bold rounded hover:bg-yellow-600">Devolver</button>
+                            </div>
+                        );
+                    }
+
+                    let statusText = "Aberto";
+                    let statusColor = "bg-blue-100 text-blue-800";
+
+                    if (status === 'fechado') {
+                        statusText = "Fechado";
+                        statusColor = "bg-gray-200 text-gray-800";
+                    } else if (status === 'em_correcao') {
+                        statusText = "Em Correção";
+                        statusColor = "bg-red-100 text-red-800";
+                    }
+                    
+                    return <span className={`px-2 py-1 text-xs font-medium rounded-full ${statusColor}`}>{statusText}</span>;
+                };
+
+                return (
+                    <div className="bg-white rounded-lg shadow overflow-x-auto">
+                        <div className="p-6 border-b">
+                            <h3 className="font-bold text-lg text-gray-800">{isManagerView ? "Acompanhamento Gerencial" : "Performance da Equipe"}</h3>
+                            <p className="text-sm text-gray-500 mt-1">{isManagerView ? "Visão completa da performance dos agentes, incluindo RV estimada." : "Visão de performance dos agentes para apresentação."}</p>
+                        </div>
+                        <table className="min-w-full">
+                            <thead className="bg-gray-50">
+                                <tr>
+                                    <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase">Agente</th>
+                                    <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase">Novos Ativos (Real./Meta)</th>
+                                    <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase">Migração (%)</th>
+                                    <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase">TPV Transacionado (Real./Meta)</th>
+                                    {isManagerView && <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase">RV Estimada</th>}
+                                    {isManagerView && <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase">Status do Mês</th>}
+                                </tr>
+                            </thead>
+                            <tbody className="bg-white divide-y divide-gray-200">
+                                {activeAgentsData.length > 0 ? activeAgentsData.map(data => (
+                                    <Fragment key={data.agentId}>
+                                        <tr className="cursor-pointer hover:bg-gray-50" onClick={() => handleToggleExpand(data.agentId)}>
+                                            <td className="px-4 py-4 font-medium text-gray-900">{data.agentName}</td>
+                                            <td className="px-4 py-4 text-gray-600">{data.performance.novos_ativos} / {data.goals.novosAtivos || 0}</td>
+                                            <td className="px-4 py-4 text-gray-600">{data.performance.migracao.toFixed(2)}%</td>
+                                            <td className="px-4 py-4 text-gray-600">{formatCurrency(data.performance.tpv_transacionado)} / {formatCurrency(data.goals.tpvM1 || 0)}</td>
+                                            {isManagerView && <td className="px-4 py-4 text-gray-600 font-bold">{formatCurrency(data.estimatedRV)}</td>}
+                                            {isManagerView && <td className="px-4 py-4"><StatusCell data={data} /></td>}
+                                        </tr>
+                                        {expandedAgentId === data.agentId && (
+                                            <tr>
+                                                <td colSpan={isManagerView ? 6 : 4}>
+                                                    <AgentPerformanceDetail agentId={data.agentId} selectedPeriod={selectedPeriod} />
+                                                </td>
+                                            </tr>
+                                        )}
+                                    </Fragment>
+                                )) : (
+                                    <tr><td colSpan={isManagerView ? 6 : 4} className="p-6 text-center text-gray-500">Nenhum dado de performance para exibir.</td></tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                );
             case 'agents':
                 return (
                     <div className="space-y-8">
@@ -229,15 +456,6 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                     <div className="bg-white rounded-lg shadow overflow-x-auto">
                         <div className="p-6 border-b">
                             <h3 className="font-bold text-lg text-gray-800">Planejamento de Metas e RV</h3>
-                            <div className="mt-4">
-                                <label htmlFor="period-select" className="block text-sm font-medium text-gray-700">Selecione o Período:</label>
-                                <select id="period-select" value={selectedPeriod} onChange={handlePeriodChange} className="mt-1 block w-full md:w-1/4 p-2 border border-gray-300 rounded-md">
-                                    <option value="2025-09">Setembro / 2025</option>
-                                    <option value="2025-10">Outubro / 2025</option>
-                                    <option value="2025-11">Novembro / 2025</option>
-                                    <option value="2025-12">Dezembro / 2025</option>
-                                </select>
-                            </div>
                         </div>
                         {activeAgentsDetails.length > 0 ? (
                             <table className="min-w-full">
@@ -294,7 +512,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                     </div>
                 );
             case 'rv_rules':
-                const kpis = franchiseData.kpis ?? [];
+                 const kpis = franchiseData.kpis ?? [];
                 const totalWeight = kpis.reduce((sum, kpi) => sum + Number(franchiseData.regrasRV?.weights?.[kpi.id] || 0), 0);
                 return (
                     <div className="bg-white p-6 rounded-lg shadow space-y-8">
@@ -366,7 +584,6 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
         <div className="min-h-screen bg-gray-100 font-sans">
             <header className="bg-white shadow-sm">
                 <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
-                    {/* --- CABEÇALHO CORRIGIDO AQUI --- */}
                     <div>
                         <h1 className="text-2xl font-bold text-gray-800">
                             Painel de Franqueado
@@ -380,12 +597,27 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
             </header>
             <div className="bg-white shadow-sm">
                 <nav className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 flex space-x-8 overflow-x-auto">
+                    <button onClick={() => setActiveTab('team_performance')} className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${activeTab === 'team_performance' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Performance da Equipe</button>
                     <button onClick={() => setActiveTab('agents')} className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${activeTab === 'agents' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Gestão de Agentes</button>
-                    <button onClick={() => setActiveTab('planning')} className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${activeTab === 'planning' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Planejamento de Metas e RV</button>
-                    <button onClick={() => setActiveTab('rv_rules')} className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${activeTab === 'rv_rules' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Regras de Cálculo da RV</button>
+                    <button onClick={() => setActiveTab('planning')} className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${activeTab === 'planning' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Planejamento</button>
+                    <button onClick={() => setActiveTab('rv_rules')} className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${activeTab === 'rv_rules' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Regras de Cálculo</button>
+                    <button onClick={() => setActiveTab('manager_monitoring')} className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${activeTab === 'manager_monitoring' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Acompanhamento Gerencial</button>
                 </nav>
             </div>
+            
             <main className="mx-auto max-w-7xl py-8 px-4 sm:px-6 lg:px-8">
+                {['team_performance', 'planning', 'manager_monitoring'].includes(activeTab) && (
+                    <div className="mb-6">
+                        <label htmlFor="period-select" className="block text-sm font-medium text-gray-700">Selecione o Período de Referência:</label>
+                        <select id="period-select" value={selectedPeriod} onChange={handlePeriodChange} className="mt-1 block w-full md:w-1/4 p-2 border border-gray-300 rounded-md bg-white shadow-sm">
+                            <option value="2025-09">Setembro / 2025</option>
+                            <option value="2025-10">Outubro / 2025</option>
+                            <option value="2025-11">Novembro / 2025</option>
+                            <option value="2025-12">Dezembro / 2025</option>
+                        </select>
+                    </div>
+                )}
+
                 {renderContent()}
             </main>
         </div>
