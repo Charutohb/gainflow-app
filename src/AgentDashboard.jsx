@@ -12,25 +12,12 @@ const TrashIcon = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400 hover:text-red-600"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
 );
 
-// Funções de data
-const getCurrentMonth = () => {
-    const now = new Date();
-    // PARA TESTE: Se precisar forçar um mês, descomente e ajuste a linha abaixo.
-    // O número do mês é baseado em zero (0 = Janeiro, 9 = Outubro).
-    // now.setFullYear(2025, 9); 
-    return now.toISOString().slice(0, 7);
-};
-
-const getPreviousMonth = () => {
-    const date = new Date();
-    // PARA TESTE: Se precisar forçar um mês, descomente e ajuste a linha abaixo.
-    // date.setFullYear(2025, 9);
-    date.setMonth(date.getMonth() - 1);
-    return date.toISOString().slice(0, 7);
-};
+// Função para gerar o mês atual como padrão inicial
+const getDefaultPeriod = () => new Date().toISOString().slice(0, 7);
 
 export default function AgentDashboard({ user, userProfile, handleLogout }) {
     const [activeTab, setActiveTab] = useState('dashboard');
+    const [selectedPeriod, setSelectedPeriod] = useState(getDefaultPeriod);
     const [isLoading, setIsLoading] = useState(true);
     const [agentPlan, setAgentPlan] = useState(null);
     const [franchiseData, setFranchiseData] = useState(null);
@@ -47,10 +34,14 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
             return;
         }
         setIsLoading(true);
+        
         const franchiseId = userProfile.idFranquia;
         const agentId = user.uid;
-        const currentMonth = getCurrentMonth();
-        const previousMonth = getPreviousMonth();
+        
+        const date = new Date(`${selectedPeriod}-02T00:00:00`);
+        const currentMonth = date.toISOString().slice(0, 7);
+        date.setMonth(date.getMonth() - 1);
+        const previousMonth = date.toISOString().slice(0, 7);
 
         const planDocRef = doc(db, "franquias", franchiseId, "planos", currentMonth);
         const unsubscribePlan = onSnapshot(planDocRef, (planSnap) => {
@@ -100,26 +91,21 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
             unsubscribeM0();
             unsubscribeM1();
         };
-    }, [user, userProfile]);
+    }, [user, userProfile, selectedPeriod]);
     
-    // --- LÓGICA DE CÁLCULO UNIFICADA E CORRIGIDA ---
     useEffect(() => {
         if (!agentPlan || !franchiseData || !franchiseData.kpis || !franchiseData.regrasRV) {
             return;
         }
 
         const { kpis } = franchiseData;
-
-        // 1. CALCULAR MÉTRICAS BASE
         const totalNovosAtivos = m0Clients.filter(client => client.status === 'active').length;
         const totalTpvTransacionado = m1Clients.reduce((sum, client) => sum + (client.currentTPV || 0), 0);
         const totalTpvAcordado = m1Clients.reduce((sum, client) => sum + (client.agreedTPV || 0), 0);
         const migracaoPercent = totalTpvAcordado > 0 ? (totalTpvTransacionado / totalTpvAcordado) * 100 : 0;
 
-        // 2. CRIAR OBJETO DE PERFORMANCE USANDO OS IDs CORRETOS DO BANCO
         const newPerformance = {};
         kpis.forEach(kpi => {
-            // Esta lógica identifica o KPI pelo nome e atribui o valor ao seu ID correto
             if (kpi.name.toLowerCase().includes('novos ativos')) {
                 newPerformance[kpi.id] = totalNovosAtivos;
             } else if (kpi.name.toLowerCase().includes('tpv transacionado')) {
@@ -130,7 +116,6 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
         });
         setPerformance(newPerformance);
 
-        // 3. CALCULAR A RV COM BASE NA PERFORMANCE CORRETA
         const { rvReference, goals } = agentPlan;
         const { regrasRV } = franchiseData;
         
@@ -162,15 +147,12 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
 
     }, [m0Clients, m1Clients, agentPlan, franchiseData]);
 
-    // ... (O restante do código, a partir de handleSubmitForApproval, permanece o mesmo) ...
-
     const handleSubmitForApproval = async () => {
         if (!window.confirm("Tem a certeza que deseja submeter este mês para aprovação? Após a submissão, não poderá fazer mais alterações até que o seu franqueado aprove ou devolva para correção.")) {
             return;
         }
 
-        const currentMonth = getCurrentMonth();
-        const planDocRef = doc(db, "franquias", userProfile.idFranquia, "planos", currentMonth);
+        const planDocRef = doc(db, "franquias", userProfile.idFranquia, "planos", selectedPeriod);
 
         try {
             const planSnap = await getDoc(planDocRef);
@@ -205,7 +187,7 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                 name: newClientName,
                 agreedTPV: Number(newClientAgreedTPV),
                 status: 'pending',
-                monthAdded: getCurrentMonth(),
+                monthAdded: selectedPeriod,
                 createdAt: serverTimestamp(),
                 currentTPV: 0,
             });
@@ -256,7 +238,7 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                 return (
                     <div className="space-y-8">
                         <div className="bg-green-600 text-white p-6 rounded-lg shadow-lg text-center">
-                            <h2 className="text-lg font-semibold text-green-200">Sua RV Estimada este Mês</h2>
+                            <h2 className="text-lg font-semibold text-green-200">Sua RV Estimada ({selectedPeriod})</h2>
                             <p className="text-5xl font-bold mt-2">{calculatedRV.total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
                         </div>
                         <div className="bg-white p-6 rounded-lg shadow">
@@ -280,7 +262,7 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                  return (
                     <div className="space-y-8">
                         <div className={`bg-white p-6 rounded-lg shadow ${isMonthClosedForEditing ? 'opacity-50' : ''}`}>
-                            <h3 className="font-bold text-lg text-gray-800 mb-4">Adicionar Novo Cliente (M0)</h3>
+                            <h3 className="font-bold text-lg text-gray-800 mb-4">Adicionar Novo Cliente (Mês: {selectedPeriod})</h3>
                             <form onSubmit={handleAddM0Client} className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
                                 <fieldset disabled={isMonthClosedForEditing} className="contents">
                                     <div className="md:col-span-1"><label className="block text-sm font-medium text-gray-700">Nome do Cliente</label><input type="text" value={newClientName} onChange={e => setNewClientName(e.target.value)} className="mt-1 w-full p-2 border border-gray-300 rounded-md"/></div>
@@ -415,12 +397,26 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
             <div className="bg-white shadow-sm">
                 <nav className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 flex space-x-8 overflow-x-auto">
                     <button onClick={() => setActiveTab('dashboard')} className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${activeTab === 'dashboard' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Dashboard RV</button>
-                    <button onClick={() => setActiveTab('m0_clients')} className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${activeTab === 'm0_clients' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Clientes M0 (Mês Atual)</button>
-                    <button onClick={() => setActiveTab('m1_clients')} className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${activeTab === 'm1_clients' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Clientes M1 (Mês Anterior)</button>
+                    <button onClick={() => setActiveTab('m0_clients')} className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${activeTab === 'm0_clients' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Clientes M0</button>
+                    <button onClick={() => setActiveTab('m1_clients')} className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${activeTab === 'm1_clients' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Clientes M1</button>
                     <button onClick={() => setActiveTab('history')} className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${activeTab === 'history' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Histórico</button>
                 </nav>
             </div>
             <main className="mx-auto max-w-7xl py-8 px-4 sm:px-6 lg:px-8">
+                <div className="mb-6">
+                    <label htmlFor="period-select" className="block text-sm font-medium text-gray-700">Selecione o Mês de Referência:</label>
+                    <select 
+                        id="period-select" 
+                        value={selectedPeriod} 
+                        onChange={e => setSelectedPeriod(e.target.value)} 
+                        className="mt-1 block w-full md:w-1/4 p-2 border border-gray-300 rounded-md bg-white shadow-sm"
+                    >
+                        <option value="2025-10">Outubro / 2025</option>
+                        <option value="2025-09">Setembro / 2025</option>
+                        <option value="2025-08">Agosto / 2025</option>
+                    </select>
+                </div>
+
                 <MonthClosingManager />
                 {renderContent()}
             </main>

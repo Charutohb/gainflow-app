@@ -18,21 +18,27 @@ export default function AgentPerformanceDetail({ agentId, selectedPeriod }) {
     useEffect(() => {
         const fetchClientDetails = async () => {
             if (!agentId || !selectedPeriod) return;
+
             setIsLoading(true);
             try {
+                // Buscar clientes M0 (do mês de referência)
                 const m0Query = query(collection(db, "clientes"), where("agentId", "==", agentId), where("monthAdded", "==", currentMonth));
                 const m0Snapshot = await getDocs(m0Query);
                 setM0Clients(m0Snapshot.docs.map(doc => doc.data()));
 
-                const m1Query = query(collection(db, "clientes"), where("agentId", "==", agentId), where("monthAdded", "==", previousMonth));
+                // --- CORREÇÃO APLICADA AQUI ---
+                // Buscar clientes M1 (do mês anterior) que estão com status 'ativo'
+                const m1Query = query(collection(db, "clientes"), where("agentId", "==", agentId), where("monthAdded", "==", previousMonth), where("status", "==", "active"));
                 const m1Snapshot = await getDocs(m1Query);
                 setM1Clients(m1Snapshot.docs.map(doc => doc.data()));
+
             } catch (error) {
                 console.error("Erro ao buscar detalhes dos clientes:", error);
             } finally {
                 setIsLoading(false);
             }
         };
+
         fetchClientDetails();
     }, [agentId, selectedPeriod, currentMonth, previousMonth]);
 
@@ -43,8 +49,7 @@ export default function AgentPerformanceDetail({ agentId, selectedPeriod }) {
     const activeM0Clients = m0Clients.filter(c => c.status === 'active');
     const totalM1Transacted = m1Clients.reduce((sum, client) => sum + (client.currentTPV || 0), 0);
 
-    // --- LÓGICA DE PROJEÇÃO REFINADA ---
-    // Calcula as variáveis de data uma única vez para serem usadas em todo o componente
+    // Lógica de Projeção
     const today = new Date();
     const refDate = new Date(`${currentMonth}-02T00:00:00`);
     
@@ -52,10 +57,8 @@ export default function AgentPerformanceDetail({ agentId, selectedPeriod }) {
     const daysPassed = isCurrentMonthView ? today.getDate() : 0;
     const daysInMonth = isCurrentMonthView ? new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate() : 0;
 
-    // Calcula a projeção TOTAL
     const totalDailyAverage = (daysPassed > 0) ? totalM1Transacted / daysPassed : 0;
     const totalProjection = totalDailyAverage * daysInMonth;
-    // --- FIM DA LÓGICA ---
 
     return (
         <div className="bg-gray-50 p-4 border-t-2 border-green-200">
@@ -97,7 +100,6 @@ export default function AgentPerformanceDetail({ agentId, selectedPeriod }) {
                                             <th className="p-2 text-left font-medium text-gray-600">Cliente M1</th>
                                             <th className="p-2 text-left font-medium text-gray-600">TPV Acordado</th>
                                             <th className="p-2 text-left font-medium text-gray-600">TPV Transacionado</th>
-                                            {/* NOVO: Coluna de Projeção Individual */}
                                             <th className="p-2 text-left font-medium text-gray-600">Projeção TPV</th>
                                             <th className="p-2 text-left font-medium text-gray-600">Migração Indiv.</th>
                                         </tr>
@@ -105,7 +107,6 @@ export default function AgentPerformanceDetail({ agentId, selectedPeriod }) {
                                     <tbody className="divide-y">
                                         {m1Clients.map((client, index) => {
                                             const individualMigration = client.agreedTPV > 0 ? ((client.currentTPV || 0) / client.agreedTPV) * 100 : 0;
-                                            // NOVO: Cálculo da projeção por cliente
                                             const clientProjection = (daysPassed > 0) ? ((client.currentTPV || 0) / daysPassed) * daysInMonth : 0;
                                             
                                             return (
@@ -113,7 +114,6 @@ export default function AgentPerformanceDetail({ agentId, selectedPeriod }) {
                                                     <td className="p-2 text-gray-800">{client.name}</td>
                                                     <td className="p-2 text-gray-500">{formatCurrency(client.agreedTPV || 0)}</td>
                                                     <td className="p-2 text-gray-800">{formatCurrency(client.currentTPV || 0)}</td>
-                                                    {/* NOVO: Célula da projeção por cliente */}
                                                     <td className="p-2 text-gray-800 font-medium">{formatCurrency(clientProjection)}</td>
                                                     <td className={`p-2 font-semibold ${individualMigration >= 70 ? 'text-green-600' : 'text-orange-500'}`}>
                                                         {individualMigration.toFixed(1)}%
