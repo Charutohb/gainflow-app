@@ -60,6 +60,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
         fetchData();
     }, [userProfile, selectedPeriod]);
 
+    // --- LÓGICA DE MIGRAÇÃO CORRIGIDA NESTE BLOCO ---
     useEffect(() => {
         const calculateTeamPerformance = async () => {
             const currentPlan = allPlans[selectedPeriod];
@@ -88,46 +89,54 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
             const performanceData = agentsList.map(agent => {
                 const agentPlan = currentPlan.agents?.find(p => p.id === agent.id) || {};
                 const goals = agentPlan.goals || {};
-                
                 const agentM0Clients = allM0Clients.filter(c => c.agentId === agent.id);
                 const agentM1Clients = allM1Clients.filter(c => c.agentId === agent.id);
 
-                const performance = {};
-                performance.novos_ativos = agentM0Clients.filter(c => c.status === 'active').length;
+                const { regrasRV, kpis } = franchiseData;
                 
+                // 1. CALCULAR MÉTRICAS BASE
+                const totalNovosAtivos = agentM0Clients.filter(c => c.status === 'active').length;
                 const totalTpvTransacionado = agentM1Clients.reduce((sum, client) => sum + (client.currentTPV || 0), 0);
-                const totalTpvAcordado = agentM1Clients.reduce((sum, client) => sum + (client.agreedTPV || 0), 0);
                 
+                // 2. CALCULAR AS DUAS VERSÕES DA "MIGRAÇÃO"
+                const individualSuccessTrigger = regrasRV.triggers?.migracao_individual || 70;
+                const successfulMigratorsCount = agentM1Clients.filter(c => {
+                    if (c.agreedTPV <= 0) return false;
+                    const individualMigration = ((c.currentTPV || 0) / c.agreedTPV) * 100;
+                    return individualMigration >= individualSuccessTrigger;
+                }).length;
+                const migracaoDisplayPercent = agentM1Clients.length > 0 ? (successfulMigratorsCount / agentM1Clients.length) * 100 : 0;
+                const totalTpvAcordado = agentM1Clients.reduce((sum, client) => sum + (client.agreedTPV || 0), 0);
+                const migracaoPortfolioPercent = totalTpvAcordado > 0 ? (totalTpvTransacionado / totalTpvAcordado) * 100 : 0;
+                
+                // 3. ATRIBUIR VALORES DE PERFORMANCE PARA EXIBIÇÃO
+                const performance = {};
+                performance.novos_ativos = totalNovosAtivos;
                 performance.tpv_transacionado = totalTpvTransacionado;
-                performance.migracao = totalTpvAcordado > 0 ? (totalTpvTransacionado / totalTpvAcordado) * 100 : 0;
+                performance.migracao = migracaoDisplayPercent; // O valor de exibição é a % de clientes
 
+                // 4. CALCULAR A RV ESTIMADA USANDO A REGRA CORRETA
                 let estimatedRV = 0;
                 const { rvReference } = agentPlan;
-                const { kpis, regrasRV } = franchiseData;
-                if(rvReference && kpis && regrasRV){
+                if (rvReference && kpis && regrasRV) {
                     kpis.forEach(kpi => {
-                        const achieved = performance[kpi.id] || 0;
-                        const goal = goals[kpi.id] || 0;
-                        let achievedPercent = 0;
+                        const kpiId = kpi.id;
                         let finalPercentForRV = 0;
 
-                        if (kpi.id === 'migracao') {
-                            const migrationTriggerValue = regrasRV.triggers?.migracao_individual_percent || 70;
-                            const minClientsTriggerPercent = regrasRV.triggers?.[kpi.id] || 50;
-                            const successfulMigrators = agentM1Clients.filter(c => c.agreedTPV > 0 && ((c.currentTPV / c.agreedTPV) * 100) >= migrationTriggerValue).length;
-                            const percentOfClientsMigrated = agentM1Clients.length > 0 ? (successfulMigrators / agentM1Clients.length) * 100 : 0;
-                            
-                            if (percentOfClientsMigrated >= minClientsTriggerPercent) {
-                                achievedPercent = achieved;
-                                finalPercentForRV = Math.min(achievedPercent, (regrasRV.caps?.[kpi.id] || 100));
+                        if (kpi.name.toLowerCase().includes('migração')) {
+                            const kpiTrigger = regrasRV.triggers?.[kpiId] || 0;
+                            if (migracaoDisplayPercent >= kpiTrigger) {
+                                finalPercentForRV = Math.min(migracaoPortfolioPercent, (regrasRV.caps?.[kpiId] || 100));
                             }
                         } else {
-                            achievedPercent = goal > 0 ? (achieved / goal) * 100 : 0;
-                            if (achievedPercent >= (regrasRV.triggers?.[kpi.id] || 0)) {
-                                finalPercentForRV = Math.min(achievedPercent, (regrasRV.caps?.[kpi.id] || 100));
+                            const achieved = performance[kpi.id] || 0;
+                            const goal = goals[kpi.id] || 0;
+                            const achievedPercent = goal > 0 ? (achieved / goal) * 100 : 0;
+                            if (achievedPercent >= (regrasRV.triggers?.[kpiId] || 0)) {
+                                finalPercentForRV = Math.min(achievedPercent, (regrasRV.caps?.[kpiId] || 100));
                             }
                         }
-                        estimatedRV += (rvReference * ((regrasRV.weights?.[kpi.id] || 0) / 100)) * (finalPercentForRV / 100);
+                        estimatedRV += (rvReference * ((regrasRV.weights?.[kpiId] || 0) / 100)) * (finalPercentForRV / 100);
                     });
                 }
                 
