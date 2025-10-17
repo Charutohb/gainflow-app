@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { db } from './firebaseConfig';
 import { doc, getDoc, collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { CurrencyInput } from './CurrencyInput';
+import { formatCurrency } from './utils/formatters';
 
 // Ícones
 const LogoutIcon = () => (
@@ -11,6 +12,14 @@ const LogoutIcon = () => (
 const TrashIcon = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400 hover:text-red-600"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
 );
+
+// NOVO: Função para determinar a cor da barra de progresso
+const getMigrationBarColor = (percentage) => {
+    if (percentage >= 100) return 'bg-green-500'; // Verde
+    if (percentage >= 50) return 'bg-blue-500';    // Azul
+    if (percentage > 30) return 'bg-yellow-500'; // Amarelo
+    return 'bg-red-500';                       // Vermelho
+};
 
 // Função para gerar o mês atual como padrão inicial
 const getDefaultPeriod = () => new Date().toISOString().slice(0, 7);
@@ -76,14 +85,12 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
 
         const m0Query = query(collection(db, "clientes"), where("agentId", "==", agentId), where("monthAdded", "==", currentMonth));
         const unsubscribeM0 = onSnapshot(m0Query, (querySnapshot) => {
-            const clients = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            setM0Clients(clients);
+            setM0Clients(querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
         });
 
         const m1Query = query(collection(db, "clientes"), where("agentId", "==", agentId), where("monthAdded", "==", previousMonth), where("status", "==", "active"));
         const unsubscribeM1 = onSnapshot(m1Query, (querySnapshot) => {
-            const clients = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            setM1Clients(clients);
+            setM1Clients(querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
         });
 
         return () => {
@@ -98,12 +105,29 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
             return;
         }
 
-        const { kpis } = franchiseData;
+        const { kpis, regrasRV } = franchiseData;
+        
+        // --- LÓGICA DE CÁLCULO ATUALIZADA ---
+        
+        // 1. CALCULAR MÉTRICAS BASE
         const totalNovosAtivos = m0Clients.filter(client => client.status === 'active').length;
         const totalTpvTransacionado = m1Clients.reduce((sum, client) => sum + (client.currentTPV || 0), 0);
         const totalTpvAcordado = m1Clients.reduce((sum, client) => sum + (client.agreedTPV || 0), 0);
-        const migracaoPercent = totalTpvAcordado > 0 ? (totalTpvTransacionado / totalTpvAcordado) * 100 : 0;
 
+        // 2. CALCULAR AS DUAS VERSÕES DA "MIGRAÇÃO"
+        const individualSuccessTrigger = regrasRV.triggers?.migracao_individual || 70;
+        const successfulMigratorsCount = m1Clients.filter(c => {
+            if (c.agreedTPV <= 0) return false;
+            const individualMigration = ((c.currentTPV || 0) / c.agreedTPV) * 100;
+            return individualMigration >= individualSuccessTrigger;
+        }).length;
+
+        // Valor para EXIBIÇÃO no "Atingimento" do Dashboard (ex: 1 de 7 clientes = 14.28%)
+        const migracaoDisplayPercent = m1Clients.length > 0 ? (successfulMigratorsCount / m1Clients.length) * 100 : 0;
+        // Valor para CÁLCULO da RV (média financeira da carteira, ex: 51.71%)
+        const migracaoPortfolioPercent = totalTpvAcordado > 0 ? (totalTpvTransacionado / totalTpvAcordado) * 100 : 0;
+        
+        // 3. ATRIBUIR VALORES AO ESTADO DE PERFORMANCE
         const newPerformance = {};
         kpis.forEach(kpi => {
             if (kpi.name.toLowerCase().includes('novos ativos')) {
@@ -111,35 +135,43 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
             } else if (kpi.name.toLowerCase().includes('tpv transacionado')) {
                 newPerformance[kpi.id] = totalTpvTransacionado;
             } else if (kpi.name.toLowerCase().includes('migração')) {
-                newPerformance[kpi.id] = migracaoPercent;
+                // Para a migração, o valor de performance (exibição) é a % de clientes
+                newPerformance[kpi.id] = migracaoDisplayPercent;
             }
         });
         setPerformance(newPerformance);
 
+        // 4. CALCULAR A RV USANDO AS REGRAS CORRETAS
         const { rvReference, goals } = agentPlan;
-        const { regrasRV } = franchiseData;
-        
         const safeGoals = goals || {};
         const weights = regrasRV.weights || {};
         const triggers = regrasRV.triggers || {};
         const caps = regrasRV.caps || {};
-        
         const newCalculatedRV = { total: 0, kpis: {} };
 
         kpis.forEach(kpi => {
             const kpiId = kpi.id;
             const goal = safeGoals[kpi.id] || 0;
-            const achieved = newPerformance[kpi.id] || 0;
-            
-            let achievedPercent = (kpiId === 'migracao' || kpi.name.toLowerCase().includes('migração')) ? achieved : (goal > 0 ? (achieved / goal) * 100 : 0);
+            const achievedForDisplay = newPerformance[kpi.id] || 0;
             let finalPercentForRV = 0;
 
-            if (achievedPercent >= (triggers[kpiId] || 0)) {
-                finalPercentForRV = Math.min(achievedPercent, (caps[kpiId] || 100));
+            if (kpi.name.toLowerCase().includes('migração')) {
+                // O GATILHO usa a porcentagem de CLIENTES que migraram (o valor de exibição)
+                const kpiTrigger = triggers[kpiId] || 0;
+                if (achievedForDisplay >= kpiTrigger) {
+                    // Mas o CÁLCULO da RV usa o desempenho financeiro REAL da carteira
+                    finalPercentForRV = Math.min(migracaoPortfolioPercent, (caps[kpiId] || 100));
+                }
+            } else {
+                // Lógica original para os outros KPIs
+                const achievedPercent = goal > 0 ? (achievedForDisplay / goal) * 100 : 0;
+                if (achievedPercent >= (triggers[kpiId] || 0)) {
+                    finalPercentForRV = Math.min(achievedPercent, (caps[kpiId] || 100));
+                }
             }
             
             const rvValue = (rvReference * (weights[kpiId] / 100)) * (finalPercentForRV / 100);
-            newCalculatedRV.kpis[kpiId] = { value: rvValue, percent: achievedPercent.toFixed(2) };
+            newCalculatedRV.kpis[kpiId] = { value: rvValue, percent: achievedForDisplay.toFixed(2) };
             newCalculatedRV.total += rvValue;
         });
 
@@ -151,9 +183,7 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
         if (!window.confirm("Tem a certeza que deseja submeter este mês para aprovação? Após a submissão, não poderá fazer mais alterações até que o seu franqueado aprove ou devolva para correção.")) {
             return;
         }
-
         const planDocRef = doc(db, "franquias", userProfile.idFranquia, "planos", selectedPeriod);
-
         try {
             const planSnap = await getDoc(planDocRef);
             if (planSnap.exists()) {
@@ -164,7 +194,6 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                     }
                     return agent;
                 });
-                
                 await updateDoc(planDocRef, { agents: updatedAgents });
                 alert("Mês submetido para aprovação com sucesso!");
             }
@@ -244,16 +273,31 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                         <div className="bg-white p-6 rounded-lg shadow">
                             <h3 className="font-bold text-lg text-gray-800 mb-4">Detalhamento da RV</h3>
                             <div className="space-y-4">
-                                {(franchiseData.kpis || []).map(kpi => (
-                                    <div key={kpi.id}>
-                                        <div className="flex justify-between font-medium">
-                                            <p>{kpi.name} ({franchiseData.regrasRV?.weights?.[kpi.id] || 0}%)</p>
-                                            <p>{(calculatedRV.kpis[kpi.id]?.value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
+                                {(franchiseData.kpis || []).map(kpi => {
+                                    const isMigracao = kpi.name.toLowerCase().includes('migração');
+                                    const isTpv = kpi.name.toLowerCase().includes('tpv transacionado');
+                                    const metaValue = agentPlan.goals?.[kpi.id] || 0;
+                                    const realizadoValue = performance[kpi.id] || 0;
+                                    const formatMeta = () => {
+                                        if (isTpv) return formatCurrency(metaValue);
+                                        return metaValue;
+                                    };
+                                    const formatRealizado = () => {
+                                        if (isMigracao) return `${realizadoValue.toFixed(2)}%`;
+                                        if (isTpv) return formatCurrency(realizadoValue);
+                                        return realizadoValue;
+                                    };
+                                    return (
+                                        <div key={kpi.id}>
+                                            <div className="flex justify-between font-medium">
+                                                <p>{kpi.name} ({franchiseData.regrasRV?.weights?.[kpi.id] || 0}%)</p>
+                                                <p>{(calculatedRV.kpis[kpi.id]?.value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
+                                            </div>
+                                            <p className="text-sm text-gray-500">Atingimento: {calculatedRV.kpis[kpi.id]?.percent || '0.00'}%</p>
+                                            <p className="text-sm text-gray-500">Meta: {formatMeta()} | Realizado: {formatRealizado()}</p>
                                         </div>
-                                        <p className="text-sm text-gray-500">Atingimento: {calculatedRV.kpis[kpi.id]?.percent || '0.00'}%</p>
-                                        <p className="text-sm text-gray-500">Meta: {agentPlan.goals?.[kpi.id] || 0} | Realizado: {kpi.name.toLowerCase().includes('migração') ? (performance[kpi.id] || 0).toFixed(2)+'%' : (performance[kpi.id] || 0)}</p>
-                                    </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         </div>
                     </div>
@@ -300,7 +344,7 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                         <div className="space-y-6">
                             {(m1Clients || []).map(client => {
                                 const migrationPercent = client.agreedTPV > 0 ? ((client.currentTPV || 0) / client.agreedTPV) * 100 : 0;
-                                const hasMigrated = migrationPercent >= (franchiseData?.regrasRV?.triggers?.migracao || 70);
+                                const barColorClass = getMigrationBarColor(migrationPercent); // Aplica a nova função de cor
                                 return (
                                     <div key={client.id} className={`border-b pb-4 ${isMonthClosedForEditing ? 'opacity-50' : ''}`}>
                                         <div className="flex justify-between items-start">
@@ -325,8 +369,8 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                                             </div>
                                         </div>
                                         <div className="mt-2">
-                                            <div className="flex justify-between mb-1"><span className="text-sm font-medium text-gray-700">Progresso de Migração</span><span className={`text-sm font-bold ${hasMigrated ? 'text-green-600' : 'text-gray-600'}`}>{migrationPercent.toFixed(1)}%</span></div>
-                                            <div className="w-full bg-gray-200 rounded-full h-2.5"><div className={`h-2.5 rounded-full ${hasMigrated ? 'bg-green-500' : 'bg-blue-500'}`} style={{ width: `${Math.min(migrationPercent, 100)}%` }}></div></div>
+                                            <div className="flex justify-between mb-1"><span className="text-sm font-medium text-gray-700">Progresso de Migração</span><span className="text-sm font-bold">{migrationPercent.toFixed(1)}%</span></div>
+                                            <div className="w-full bg-gray-200 rounded-full h-2.5"><div className={`h-2.5 rounded-full ${barColorClass}`} style={{ width: `${Math.min(migrationPercent, 100)}%` }}></div></div>
                                         </div>
                                     </div>
                                 );
