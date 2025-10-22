@@ -18,7 +18,7 @@ const getMigrationBarColor = (percentage) => {
     if (percentage >= 100) return 'bg-green-500'; // Verde
     if (percentage >= 50) return 'bg-blue-500';    // Azul
     if (percentage > 30) return 'bg-yellow-500'; // Amarelo
-    return 'bg-red-500';                       // Vermelho
+    return 'bg-red-500';                      // Vermelho
 };
 
 // Função para gerar o mês atual como padrão inicial
@@ -149,31 +149,40 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
         const caps = regrasRV.caps || {};
         const newCalculatedRV = { total: 0, kpis: {} };
 
+        // --- INÍCIO DA CORREÇÃO ---
         kpis.forEach(kpi => {
             const kpiId = kpi.id;
             const goal = safeGoals[kpi.id] || 0;
             const achievedForDisplay = newPerformance[kpi.id] || 0;
             let finalPercentForRV = 0;
+            let percentualDeAtingimentoParaExibicao = 0; // Nova variável para a % de exibição
 
             if (kpi.name.toLowerCase().includes('migração')) {
-                // O GATILHO usa a porcentagem de CLIENTES que migraram (o valor de exibição)
                 const kpiTrigger = triggers[kpiId] || 0;
+                // Para migração, o atingimento para exibição é o próprio valor
+                percentualDeAtingimentoParaExibicao = achievedForDisplay; 
+                
                 if (achievedForDisplay >= kpiTrigger) {
                     // Mas o CÁLCULO da RV usa o desempenho financeiro REAL da carteira
                     finalPercentForRV = Math.min(migracaoPortfolioPercent, (caps[kpiId] || 100));
                 }
             } else {
-                // Lógica original para os outros KPIs
+                // Para outros KPIs, calculamos a porcentagem de atingimento para exibição
                 const achievedPercent = goal > 0 ? (achievedForDisplay / goal) * 100 : 0;
+                percentualDeAtingimentoParaExibicao = achievedPercent; // Atribui o cálculo correto
+
                 if (achievedPercent >= (triggers[kpiId] || 0)) {
                     finalPercentForRV = Math.min(achievedPercent, (caps[kpiId] || 100));
                 }
             }
             
             const rvValue = (rvReference * (weights[kpiId] / 100)) * (finalPercentForRV / 100);
-            newCalculatedRV.kpis[kpiId] = { value: rvValue, percent: achievedForDisplay.toFixed(2) };
+            
+            // Agora usamos a variável correta para a propriedade 'percent'
+            newCalculatedRV.kpis[kpiId] = { value: rvValue, percent: percentualDeAtingimentoParaExibicao.toFixed(2) };
             newCalculatedRV.total += rvValue;
         });
+        // --- FIM DA CORREÇÃO ---
 
         setCalculatedRV(newCalculatedRV);
 
