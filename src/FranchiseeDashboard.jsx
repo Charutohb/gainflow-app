@@ -32,7 +32,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
         const fetchData = async () => {
             if (!userProfile || !userProfile.idFranquia) return;
             setIsLoading(true);
-            setTeamPerformanceData([]);
+            setTeamPerformanceData([]); // Limpa os dados antigos antes de buscar novos
             const franchiseId = userProfile.idFranquia;
             try {
                 const franchiseDocRef = doc(db, "franquias", franchiseId);
@@ -98,7 +98,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                 const totalNovosAtivos = agentM0Clients.filter(c => c.status === 'active').length;
                 const totalTpvTransacionado = agentM1Clients.reduce((sum, client) => sum + (client.currentTPV || 0), 0);
                 
-                // 2. CALCULAR AS DUAS VERSÕES DA "MIGRAÇÃO"
+                // 2. CALCULAR "MIGRAÇÃO"
                 const individualSuccessTrigger = regrasRV.triggers?.migracao_individual || 70;
                 const successfulMigratorsCount = agentM1Clients.filter(c => {
                     if (c.agreedTPV <= 0) return false;
@@ -106,38 +106,68 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                     return individualMigration >= individualSuccessTrigger;
                 }).length;
                 const migracaoDisplayPercent = agentM1Clients.length > 0 ? (successfulMigratorsCount / agentM1Clients.length) * 100 : 0;
-                const totalTpvAcordado = agentM1Clients.reduce((sum, client) => sum + (client.agreedTPV || 0), 0);
-                const migracaoPortfolioPercent = totalTpvAcordado > 0 ? (totalTpvTransacionado / totalTpvAcordado) * 100 : 0;
-                
-                // 3. ATRIBUIR VALORES DE PERFORMANCE PARA EXIBIÇÃO
-                const performance = {};
-                performance.novos_ativos = totalNovosAtivos;
-                performance.tpv_transacionado = totalTpvTransacionado;
-                performance.migracao = migracaoDisplayPercent; // O valor de exibição é a % de clientes
 
+                // 3. ATRIBUIR VALORES DE PERFORMANCE (REALIZADO)
+                const performance = {};
+                if (kpis && Array.isArray(kpis)) {
+                    kpis.forEach(kpi => {
+                        if (kpi.name.toLowerCase().includes('novos ativos')) {
+                            performance[kpi.id] = totalNovosAtivos;
+                        } else if (kpi.name.toLowerCase().includes('tpv transacionado')) {
+                            performance[kpi.id] = totalTpvTransacionado;
+                        } else if (kpi.name.toLowerCase().includes('migração')) {
+                            performance[kpi.id] = migracaoDisplayPercent;
+                        }
+                    });
+                }
+                
                 // 4. CALCULAR A RV ESTIMADA USANDO A REGRA CORRETA
                 let estimatedRV = 0;
                 const { rvReference } = agentPlan;
-                if (rvReference && kpis && regrasRV) {
+                
+                if (rvReference && kpis && Array.isArray(kpis) && regrasRV) {
+                    
+                    // --- INÍCIO DA CORREÇÃO ---
                     kpis.forEach(kpi => {
                         const kpiId = kpi.id;
+                        const goal = goals[kpi.id] || 0;                 // Meta: 12, 300k, ou 70
+                        const kpiTrigger = regrasRV.triggers?.[kpiId] || 0; // Gatilho: ex: 50 (%)
+                        const kpiCap = regrasRV.caps?.[kpiId] || 100;      // Teto: ex: 100 ou 120 (%)
+
+                        const achievedRealizado = performance[kpi.id] || 0; // Realizado: 9, 186k, ou 57.14
+                        
                         let finalPercentForRV = 0;
+                        let percentualParaCalculoDeRV = 0;
+                        let valorParaChecarGatilho = 0;
 
                         if (kpi.name.toLowerCase().includes('migração')) {
-                            const kpiTrigger = regrasRV.triggers?.[kpiId] || 0;
-                            if (migracaoDisplayPercent >= kpiTrigger) {
-                                finalPercentForRV = Math.min(migracaoPortfolioPercent, (regrasRV.caps?.[kpiId] || 100));
-                            }
+                            // 1. Percentual para CÁLCULO DE RV (Atingimento da Meta)
+                            // (57.14 / 70) * 100 = 81.63%
+                            percentualParaCalculoDeRV = goal > 0 ? (achievedRealizado / goal) * 100 : 0;
+                            
+                            // 3. Valor para CHECAR O GATILHO
+                            // (O gatilho de 50% é sobre o "Realizado")
+                            valorParaChecarGatilho = achievedRealizado; // 57.14%
+
                         } else {
-                            const achieved = performance[kpi.id] || 0;
-                            const goal = goals[kpi.id] || 0;
-                            const achievedPercent = goal > 0 ? (achieved / goal) * 100 : 0;
-                            if (achievedPercent >= (regrasRV.triggers?.[kpiId] || 0)) {
-                                finalPercentForRV = Math.min(achievedPercent, (regrasRV.caps?.[kpiId] || 100));
-                            }
+                            // 1. Percentual para CÁLCULO DE RV (Atingimento da Meta)
+                            // (9 / 12) * 100 = 75%
+                            percentualParaCalculoDeRV = goal > 0 ? (achievedRealizado / goal) * 100 : 0;
+
+                            // 3. Valor para CHECAR O GATILHO
+                            // (O gatilho de 50% é sobre o "Atingimento da Meta")
+                            valorParaChecarGatilho = percentualParaCalculoDeRV; // 75%
                         }
+                        
+                        // Agora, a lógica de pagamento é a mesma
+                        if (valorParaChecarGatilho >= kpiTrigger) {
+                            // Paga o Atingimento da Meta (81.63% ou 75%), limitado ao Teto
+                            finalPercentForRV = Math.min(percentualParaCalculoDeRV, kpiCap);
+                        }
+                        
                         estimatedRV += (rvReference * ((regrasRV.weights?.[kpiId] || 0) / 100)) * (finalPercentForRV / 100);
                     });
+                    // --- FIM DA CORREÇÃO ---
                 }
                 
                 return {
@@ -379,25 +409,35 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                                 </tr>
                             </thead>
                             <tbody className="bg-white divide-y divide-gray-200">
-                                {activeAgentsData.length > 0 ? activeAgentsData.map(data => (
-                                    <Fragment key={data.agentId}>
-                                        <tr className="cursor-pointer hover:bg-gray-50" onClick={() => handleToggleExpand(data.agentId)}>
-                                            <td className="px-4 py-4 font-medium text-gray-900">{data.agentName}</td>
-                                            <td className="px-4 py-4 text-gray-600">{data.performance.novos_ativos} / {data.goals.novosAtivos || 0}</td>
-                                            <td className="px-4 py-4 text-gray-600">{data.performance.migracao.toFixed(2)}%</td>
-                                            <td className="px-4 py-4 text-gray-600">{formatCurrency(data.performance.tpv_transacionado)} / {formatCurrency(data.goals.tpvM1 || 0)}</td>
-                                            {isManagerView && <td className="px-4 py-4 text-gray-600 font-bold">{formatCurrency(data.estimatedRV)}</td>}
-                                            {isManagerView && <td className="px-4 py-4"><StatusCell data={data} /></td>}
-                                        </tr>
-                                        {expandedAgentId === data.agentId && (
-                                            <tr>
-                                                <td colSpan={isManagerView ? 6 : 4}>
-                                                    <AgentPerformanceDetail agentId={data.agentId} selectedPeriod={selectedPeriod} />
-                                                </td>
+                                {activeAgentsData.length > 0 ? activeAgentsData.map(data => {
+                                    // Acha o kpiId correspondente para os nomes
+                                    const kpiIds = {};
+                                    (franchiseData.kpis || []).forEach(kpi => {
+                                        if (kpi.name.toLowerCase().includes('novos ativos')) kpiIds.novosAtivos = kpi.id;
+                                        if (kpi.name.toLowerCase().includes('migração')) kpiIds.migracao = kpi.id;
+                                        if (kpi.name.toLowerCase().includes('tpv transacionado')) kpiIds.tpvM1 = kpi.id;
+                                    });
+                                    
+                                    return (
+                                        <Fragment key={data.agentId}>
+                                            <tr className="cursor-pointer hover:bg-gray-50" onClick={() => handleToggleExpand(data.agentId)}>
+                                                <td className="px-4 py-4 font-medium text-gray-900">{data.agentName}</td>
+                                                <td className="px-4 py-4 text-gray-600">{data.performance[kpiIds.novosAtivos] || 0} / {data.goals[kpiIds.novosAtivos] || 0}</td>
+                                                <td className="px-4 py-4 text-gray-600">{(data.performance[kpiIds.migracao] || 0).toFixed(2)}%</td>
+                                                <td className="px-4 py-4 text-gray-600">{formatCurrency(data.performance[kpiIds.tpvM1] || 0)} / {formatCurrency(data.goals[kpiIds.tpvM1] || 0)}</td>
+                                                {isManagerView && <td className="px-4 py-4 text-gray-600 font-bold">{formatCurrency(data.estimatedRV)}</td>}
+                                                {isManagerView && <td className="px-4 py-4"><StatusCell data={data} /></td>}
                                             </tr>
-                                        )}
-                                    </Fragment>
-                                )) : (
+                                            {expandedAgentId === data.agentId && (
+                                                <tr>
+                                                    <td colSpan={isManagerView ? 6 : 4}>
+                                                        <AgentPerformanceDetail agentId={data.agentId} selectedPeriod={selectedPeriod} />
+                                                    </td>
+                                                </tr>
+                                            )}
+                                        </Fragment>
+                                    )
+                                }) : (
                                     <tr><td colSpan={isManagerView ? 6 : 4} className="p-6 text-center text-gray-500">Nenhum dado de performance para exibir.</td></tr>
                                 )}
                             </tbody>
@@ -493,7 +533,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                                                 </td>
                                                 {kpisForPlanning.map(kpi => (
                                                     <td key={kpi.id} className="px-4 py-4">
-                                                        {kpi.id === 'tpv_transacionado' ? (
+                                                        {kpi.name.toLowerCase().includes('tpv transacionado') ? (
                                                             <CurrencyInput
                                                                 value={agentPlan.goals?.[kpi.id] ?? 0}
                                                                 onChange={(newValue) => handlePlanDataChange(agent.id, kpi.id, newValue, true)}
@@ -521,7 +561,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                     </div>
                 );
             case 'rv_rules':
-                 const kpis = franchiseData.kpis ?? [];
+                  const kpis = franchiseData.kpis ?? [];
                 const totalWeight = kpis.reduce((sum, kpi) => sum + Number(franchiseData.regrasRV?.weights?.[kpi.id] || 0), 0);
                 return (
                     <div className="bg-white p-6 rounded-lg shadow space-y-8">

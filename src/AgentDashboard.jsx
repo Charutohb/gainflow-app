@@ -18,7 +18,7 @@ const getMigrationBarColor = (percentage) => {
     if (percentage >= 100) return 'bg-green-500'; // Verde
     if (percentage >= 50) return 'bg-blue-500';    // Azul
     if (percentage > 30) return 'bg-yellow-500'; // Amarelo
-    return 'bg-red-500';                      // Vermelho
+    return 'bg-red-500';                        // Vermelho
 };
 
 // Função para gerar o mês atual como padrão inicial
@@ -107,8 +107,6 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
 
         const { kpis, regrasRV } = franchiseData;
         
-        // --- LÓGICA DE CÁLCULO ATUALIZADA ---
-        
         // 1. CALCULAR MÉTRICAS BASE
         const totalNovosAtivos = m0Clients.filter(client => client.status === 'active').length;
         const totalTpvTransacionado = m1Clients.reduce((sum, client) => sum + (client.currentTPV || 0), 0);
@@ -122,10 +120,8 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
             return individualMigration >= individualSuccessTrigger;
         }).length;
 
-        // Valor para EXIBIÇÃO no "Atingimento" do Dashboard (ex: 1 de 7 clientes = 14.28%)
+        // Valor para EXIBIÇÃO no "Atingimento" do Dashboard (ex: 4 de 7 clientes = 57.14%)
         const migracaoDisplayPercent = m1Clients.length > 0 ? (successfulMigratorsCount / m1Clients.length) * 100 : 0;
-        // Valor para CÁLCULO da RV (média financeira da carteira, ex: 51.71%)
-        const migracaoPortfolioPercent = totalTpvAcordado > 0 ? (totalTpvTransacionado / totalTpvAcordado) * 100 : 0;
         
         // 3. ATRIBUIR VALORES AO ESTADO DE PERFORMANCE
         const newPerformance = {};
@@ -149,40 +145,61 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
         const caps = regrasRV.caps || {};
         const newCalculatedRV = { total: 0, kpis: {} };
 
-        // --- INÍCIO DA CORREÇÃO ---
+        // --- INÍCIO DA CORREÇÃO DEFINITIVA ---
         kpis.forEach(kpi => {
             const kpiId = kpi.id;
-            const goal = safeGoals[kpi.id] || 0;
-            const achievedForDisplay = newPerformance[kpi.id] || 0;
+            const goal = safeGoals[kpi.id] || 0;                 // Meta: 12, 300k, ou 70
+            const achievedForDisplay = newPerformance[kpi.id] || 0;  // Realizado: 9, 186k, ou 57.14
+            const kpiTrigger = triggers[kpiId] || 0;           // Gatilho: ex: 50 (%)
+            const kpiCap = caps[kpiId] || 100;                 // Teto: ex: 100 ou 120 (%)
+
             let finalPercentForRV = 0;
-            let percentualDeAtingimentoParaExibicao = 0; // Nova variável para a % de exibição
+            let percentualDeAtingimentoParaExibicao = 0;
+            let percentualParaCalculoDeRV = 0;
+            let valorParaChecarGatilho = 0;
 
             if (kpi.name.toLowerCase().includes('migração')) {
-                const kpiTrigger = triggers[kpiId] || 0;
-                // Para migração, o atingimento para exibição é o próprio valor
-                percentualDeAtingimentoParaExibicao = achievedForDisplay; 
+                // 1. Percentual para CÁLCULO DE RV (Atingimento da Meta)
+                // (57.14 / 70) * 100 = 81.63%
+                percentualParaCalculoDeRV = goal > 0 ? (achievedForDisplay / goal) * 100 : 0;
                 
-                if (achievedForDisplay >= kpiTrigger) {
-                    // Mas o CÁLCULO da RV usa o desempenho financeiro REAL da carteira
-                    finalPercentForRV = Math.min(migracaoPortfolioPercent, (caps[kpiId] || 100));
-                }
-            } else {
-                // Para outros KPIs, calculamos a porcentagem de atingimento para exibição
-                const achievedPercent = goal > 0 ? (achievedForDisplay / goal) * 100 : 0;
-                percentualDeAtingimentoParaExibicao = achievedPercent; // Atribui o cálculo correto
+                // 2. Percentual para EXIBIÇÃO NA TELA
+                // (Mostra o "Realizado")
+                percentualDeAtingimentoParaExibicao = achievedForDisplay; // 57.14%
 
-                if (achievedPercent >= (triggers[kpiId] || 0)) {
-                    finalPercentForRV = Math.min(achievedPercent, (caps[kpiId] || 100));
-                }
+                // 3. Valor para CHECAR O GATILHO
+                // (O gatilho de 50% é sobre o "Realizado")
+                valorParaChecarGatilho = achievedForDisplay; // 57.14%
+
+            } else {
+                // 1. Percentual para CÁLCULO DE RV (Atingimento da Meta)
+                // (9 / 12) * 100 = 75%
+                percentualParaCalculoDeRV = goal > 0 ? (achievedForDisplay / goal) * 100 : 0;
+                
+                // 2. Percentual para EXIBIÇÃO NA TELA
+                // (Mostra o "Atingimento da Meta")
+                percentualDeAtingimentoParaExibicao = percentualParaCalculoDeRV; // 75%
+
+                // 3. Valor para CHECAR O GATILHO
+                // (O gatilho de 50% é sobre o "Atingimento da Meta")
+                valorParaChecarGatilho = percentualParaCalculoDeRV; // 75%
             }
+            
+            // Agora, a lógica de pagamento é a mesma
+            // Ex Migração: if (57.14 >= 50) -> TRUE
+            // Ex Ativos:   if (75 >= 50) -> TRUE
+            if (valorParaChecarGatilho >= kpiTrigger) {
+                // Paga o Atingimento da Meta (81.63% ou 75%), limitado ao Teto
+                finalPercentForRV = Math.min(percentualParaCalculoDeRV, kpiCap);
+            }
+            // Se não, finalPercentForRV continua 0
             
             const rvValue = (rvReference * (weights[kpiId] / 100)) * (finalPercentForRV / 100);
             
-            // Agora usamos a variável correta para a propriedade 'percent'
             newCalculatedRV.kpis[kpiId] = { value: rvValue, percent: percentualDeAtingimentoParaExibicao.toFixed(2) };
             newCalculatedRV.total += rvValue;
         });
-        // --- FIM DA CORREÇÃO ---
+        // --- FIM DA CORREÇÃO DEFINITIVA ---
 
         setCalculatedRV(newCalculatedRV);
 
@@ -288,6 +305,7 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                                     const metaValue = agentPlan.goals?.[kpi.id] || 0;
                                     const realizadoValue = performance[kpi.id] || 0;
                                     const formatMeta = () => {
+                                        if (isMigracao) return `${metaValue}%`; // MOSTRA A META DE MIGRAÇÃO
                                         if (isTpv) return formatCurrency(metaValue);
                                         return metaValue;
                                     };
@@ -302,6 +320,7 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                                                 <p>{kpi.name} ({franchiseData.regrasRV?.weights?.[kpi.id] || 0}%)</p>
                                                 <p>{(calculatedRV.kpis[kpi.id]?.value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
                                             </div>
+                                            {/* Agora o "Atingimento" de Migração mostra o Realizado (57.14%) */}
                                             <p className="text-sm text-gray-500">Atingimento: {calculatedRV.kpis[kpi.id]?.percent || '0.00'}%</p>
                                             <p className="text-sm text-gray-500">Meta: {formatMeta()} | Realizado: {formatRealizado()}</p>
                                         </div>
