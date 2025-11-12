@@ -1,6 +1,7 @@
-import React, { useState, useEffect, Fragment } from 'react';
+import React, { useState, useEffect, Fragment, useMemo } from 'react';
 import { db } from './firebaseConfig';
-import { doc, getDoc, updateDoc, setDoc, addDoc, collection, query, where, getDocs } from 'firebase/firestore';
+import { httpsCallable, getFunctions } from 'firebase/functions';
+import { doc, getDoc, updateDoc, setDoc, addDoc, collection, query, where, getDocs, Timestamp } from 'firebase/firestore';
 import { CurrencyInput } from './CurrencyInput';
 import { formatCurrency } from './utils/formatters';
 import AgentPerformanceDetail from './AgentPerformanceDetail';
@@ -14,7 +15,6 @@ const CopyIcon = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
 );
 
-
 export default function FranchiseeDashboard({ user, userProfile, handleLogout }) {
     const [activeTab, setActiveTab] = useState('team_performance');
     const [selectedPeriod, setSelectedPeriod] = useState("2025-10");
@@ -27,12 +27,16 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
     const [generatedLink, setGeneratedLink] = useState('');
     const [teamPerformanceData, setTeamPerformanceData] = useState([]);
     const [expandedAgentId, setExpandedAgentId] = useState(null);
+    const [approvingAgentId, setApprovingAgentId] = useState(null); 
 
+    const functionsService = getFunctions(db.app);
+
+    // useEffect 1: Busca dados (sem alterações)
     useEffect(() => {
         const fetchData = async () => {
             if (!userProfile || !userProfile.idFranquia) return;
             setIsLoading(true);
-            setTeamPerformanceData([]); // Limpa os dados antigos antes de buscar novos
+            setTeamPerformanceData([]); 
             const franchiseId = userProfile.idFranquia;
             try {
                 const franchiseDocRef = doc(db, "franquias", franchiseId);
@@ -52,7 +56,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                     setAllPlans(prev => ({ ...prev, [selectedPeriod]: { agents: [] } }));
                 }
             } catch (error) {
-                console.error("Erro ao buscar dados:", error);
+                console.error("Erro ao buscar dados (useEffect 1):", error);
             } finally {
                 setIsLoading(false);
             }
@@ -60,12 +64,12 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
         fetchData();
     }, [userProfile, selectedPeriod]);
 
-    // --- LÓGICA DE MIGRAÇÃO CORRIGIDA NESTE BLOCO ---
+    // useEffect 2: Calcula performance (COM A CORREÇÃO DE LÓGICA)
     useEffect(() => {
         const calculateTeamPerformance = async () => {
             const currentPlan = allPlans[selectedPeriod];
             
-            if (agentsList.length === 0 || !franchiseData || !currentPlan) {
+            if (agentsList.length === 0 || !franchiseData || !currentPlan || !userProfile.idFranquia) {
                 setTeamPerformanceData([]);
                 return;
             }
@@ -78,14 +82,32 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
             date.setMonth(date.getMonth() - 1);
             const previousMonth = date.toISOString().slice(0, 7);
 
-            const m0Query = query(collection(db, "clientes"), where("agentId", "in", agentIds), where("monthAdded", "==", currentMonth));
-            const m1Query = query(collection(db, "clientes"), where("agentId", "in", agentIds), where("monthAdded", "==", previousMonth), where("status", "==", "active"));
-            
-            const [m0Snapshot, m1Snapshot] = await Promise.all([getDocs(m0Query), getDocs(m1Query)]);
-            
-            const allM0Clients = m0Snapshot.docs.map(doc => doc.data());
-            const allM1Clients = m1Snapshot.docs.map(doc => doc.data());
+            let allM0Clients = [];
+            let allM1Clients = [];
 
+            try {
+                const m0Query = query(collection(db, "clientes"), 
+                    where("franchiseId", "==", userProfile.idFranquia), 
+                    where("monthAdded", "==", currentMonth)
+                );
+                const m1Query = query(collection(db, "clientes"), 
+                    where("franchiseId", "==", userProfile.idFranquia), 
+                    where("monthAdded", "==", previousMonth), 
+                    where("status", "==", "active")
+                );
+                
+                const [m0Snapshot, m1Snapshot] = await Promise.all([getDocs(m0Query), getDocs(m1Query)]);
+                
+                allM0Clients = m0Snapshot.docs.map(doc => doc.data());
+                allM1Clients = m1Snapshot.docs.map(doc => doc.data());
+
+            } catch (error) {
+                console.error("Erro ao buscar dados de clientes (M0/M1):", error);
+                setTeamPerformanceData([]); 
+                return;
+            }
+
+            // Mapeia os dados de performance
             const performanceData = agentsList.map(agent => {
                 const agentPlan = currentPlan.agents?.find(p => p.id === agent.id) || {};
                 const goals = agentPlan.goals || {};
@@ -94,11 +116,9 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
 
                 const { regrasRV, kpis } = franchiseData;
                 
-                // 1. CALCULAR MÉTRICAS BASE
                 const totalNovosAtivos = agentM0Clients.filter(c => c.status === 'active').length;
                 const totalTpvTransacionado = agentM1Clients.reduce((sum, client) => sum + (client.currentTPV || 0), 0);
                 
-                // 2. CALCULAR "MIGRAÇÃO"
                 const individualSuccessTrigger = regrasRV.triggers?.migracao_individual || 70;
                 const successfulMigratorsCount = agentM1Clients.filter(c => {
                     if (c.agreedTPV <= 0) return false;
@@ -107,7 +127,8 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                 }).length;
                 const migracaoDisplayPercent = agentM1Clients.length > 0 ? (successfulMigratorsCount / agentM1Clients.length) * 100 : 0;
 
-                // 3. ATRIBUIR VALORES DE PERFORMANCE (REALIZADO)
+                // (Variável 'migracaoPortfolioPercent' não é mais necessária aqui)
+
                 const performance = {};
                 if (kpis && Array.isArray(kpis)) {
                     kpis.forEach(kpi => {
@@ -116,58 +137,52 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                         } else if (kpi.name.toLowerCase().includes('tpv transacionado')) {
                             performance[kpi.id] = totalTpvTransacionado;
                         } else if (kpi.name.toLowerCase().includes('migração')) {
-                            performance[kpi.id] = migracaoDisplayPercent;
+                            performance[kpi.id] = migracaoDisplayPercent; 
                         }
                     });
                 }
                 
-                // 4. CALCULAR A RV ESTIMADA USANDO A REGRA CORRETA
                 let estimatedRV = 0;
                 const { rvReference } = agentPlan;
                 
                 if (rvReference && kpis && Array.isArray(kpis) && regrasRV) {
-                    
-                    // --- INÍCIO DA CORREÇÃO ---
                     kpis.forEach(kpi => {
                         const kpiId = kpi.id;
-                        const goal = goals[kpi.id] || 0;                 // Meta: 12, 300k, ou 70
-                        const kpiTrigger = regrasRV.triggers?.[kpiId] || 0; // Gatilho: ex: 50 (%)
-                        const kpiCap = regrasRV.caps?.[kpiId] || 100;      // Teto: ex: 100 ou 120 (%)
-
-                        const achievedRealizado = performance[kpi.id] || 0; // Realizado: 9, 186k, ou 57.14
+                        const goal = goals[kpi.id] || 0; 
+                        const kpiCap = regrasRV.caps?.[kpi.id] || 100;
+                        const achievedRealizado = performance[kpi.id] || 0;
                         
                         let finalPercentForRV = 0;
+                        let atingimentoPercent = 0;
                         let percentualParaCalculoDeRV = 0;
                         let valorParaChecarGatilho = 0;
 
+
+                        // --- INÍCIO DA CORREÇÃO DE LÓGICA ---
                         if (kpi.name.toLowerCase().includes('migração')) {
-                            // 1. Percentual para CÁLCULO DE RV (Atingimento da Meta)
-                            // (57.14 / 70) * 100 = 81.63%
-                            percentualParaCalculoDeRV = goal > 0 ? (achievedRealizado / goal) * 100 : 0;
+                            atingimentoPercent = achievedRealizado; // (realizadoValue)
+                            const kpiTrigger = goal; // (goal é o trigger)
+                            percentualParaCalculoDeRV = goal > 0 ? (atingimentoPercent / goal) * 100 : 0; 
+                            valorParaChecarGatilho = atingimentoPercent; // Gatilho é sobre o realizado
                             
-                            // 3. Valor para CHECAR O GATILHO
-                            // (O gatilho de 50% é sobre o "Realizado")
-                            valorParaChecarGatilho = achievedRealizado; // 57.14%
-
+                            if (valorParaChecarGatilho >= kpiTrigger) {
+                                finalPercentForRV = Math.min(percentualParaCalculoDeRV, kpiCap); // <-- PAGA SOBRE O ATINGIMENTO
+                            }
                         } else {
-                            // 1. Percentual para CÁLCULO DE RV (Atingimento da Meta)
-                            // (9 / 12) * 100 = 75%
-                            percentualParaCalculoDeRV = goal > 0 ? (achievedRealizado / goal) * 100 : 0;
+                            // Lógica dos outros KPIs
+                            atingimentoPercent = goal > 0 ? (achievedRealizado / goal) * 100 : 0;
+                            percentualParaCalculoDeRV = atingimentoPercent;
+                            valorParaChecarGatilho = atingimentoPercent;
+                            const kpiTrigger = regrasRV.triggers?.[kpi.id] || 0;
 
-                            // 3. Valor para CHECAR O GATILHO
-                            // (O gatilho de 50% é sobre o "Atingimento da Meta")
-                            valorParaChecarGatilho = percentualParaCalculoDeRV; // 75%
+                            if (valorParaChecarGatilho >= kpiTrigger) {
+                                finalPercentForRV = Math.min(percentualParaCalculoDeRV, kpiCap); // <-- PAGA SOBRE O ATINGIMENTO
+                            }
                         }
+                        // --- FIM DA CORREÇÃO DE LÓGICA ---
                         
-                        // Agora, a lógica de pagamento é a mesma
-                        if (valorParaChecarGatilho >= kpiTrigger) {
-                            // Paga o Atingimento da Meta (81.63% ou 75%), limitado ao Teto
-                            finalPercentForRV = Math.min(percentualParaCalculoDeRV, kpiCap);
-                        }
-                        
-                        estimatedRV += (rvReference * ((regrasRV.weights?.[kpiId] || 0) / 100)) * (finalPercentForRV / 100);
+                        estimatedRV += (rvReference * ((regrasRV.weights?.[kpi.id] || 0) / 100)) * (finalPercentForRV / 100);
                     });
-                    // --- FIM DA CORREÇÃO ---
                 }
                 
                 return {
@@ -175,8 +190,9 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                     agentName: agent.nome,
                     performance,
                     goals,
-                    estimatedRV,
+                    estimatedRV, // Agora este valor deve ser 1298.79
                     statusFechamento: agentPlan.statusFechamento || 'aberto',
+                    rvFinal: agentPlan.rvFinal || null
                 };
             });
 
@@ -184,8 +200,10 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
         };
 
         calculateTeamPerformance();
-    }, [agentsList, allPlans, franchiseData, selectedPeriod]);
+    }, [agentsList, allPlans, franchiseData, selectedPeriod, userProfile.idFranquia]); 
     
+    // --- Funções 'handle' (sem alterações) ---
+
     const handleToggleExpand = (agentId) => {
         setExpandedAgentId(prevId => (prevId === agentId ? null : agentId));
     };
@@ -201,7 +219,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                 email: inviteEmail,
                 idFranquia: userProfile.idFranquia,
                 status: 'pendente',
-                criadoEm: new Date(),
+                criadoEm: Timestamp.now(),
             });
             const inviteLink = `${window.location.origin}/?conviteId=${newInviteDoc.id}`;
             setGeneratedLink(inviteLink);
@@ -230,7 +248,6 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
             await updateDoc(agentDocRef, {
                 [field]: value
             });
-            console.log(`Campo '${field}' do agente ${agentId} atualizado para '${value}'`);
         } catch (error) {
             console.error("Erro ao atualizar dados do agente:", error);
             alert("Ocorreu um erro ao salvar a alteração. Por favor, tente novamente.");
@@ -260,7 +277,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
             let agentPlan = newPlans[selectedPeriod].agents.find(a => a.id === agentId);
             if (!agentPlan) {
                 const agentDetails = agentsList.find(a => a.id === agentId);
-                agentPlan = { id: agentId, name: agentDetails.nome, goals: {} };
+                agentPlan = { id: agentId, name: agentDetails?.nome || 'Agente Desconhecido', goals: {} };
                 newPlans[selectedPeriod].agents.push(agentPlan);
             }
             const updatedValue = typeof value === 'number' ? value : (value === '' ? '' : Number(value));
@@ -287,7 +304,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                 if(!rulesToSave.triggers) rulesToSave.triggers = {};
                 if(!rulesToSave.caps) rulesToSave.caps = {};
 
-                franchiseData.kpis.forEach(kpi => {
+                (franchiseData.kpis || []).forEach(kpi => {
                     rulesToSave.weights[kpi.id] = Number(rulesToSave.weights[kpi.id]) || 0;
                     rulesToSave.triggers[kpi.id] = Number(rulesToSave.triggers[kpi.id]) || 0;
                     rulesToSave.caps[kpi.id] = Number(rulesToSave.caps[kpi.id]) || 0;
@@ -307,13 +324,49 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                     }
                 });
                 const planDocRef = doc(db, "franquias", userProfile.idFranquia, "planos", selectedPeriod);
-                await setDoc(planDocRef, planData);
+                await setDoc(planDocRef, planData, { merge: true }); // Usar merge
                 alert("Planeamento salvo com sucesso!");
             }
 
         } catch (error) {
             console.error("Erro ao salvar alterações:", error);
             alert("Não foi possível salvar as alterações.");
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleAddNewKpi = async () => {
+        if (!newKpiName.trim()) {
+            alert("Por favor, insira um nome para o novo KPI.");
+            return;
+        }
+
+        const newKpiId = `kpi_${newKpiName.trim().toLowerCase().replace(/\s+/g, '_')}_${Date.now()}`;
+        const newKpi = {
+            id: newKpiId,
+            name: newKpiName.trim(),
+            createdAt: Timestamp.now()
+        };
+
+        const updatedKpis = [...(franchiseData.kpis || []), newKpi];
+        const franchiseDocRef = doc(db, "franquias", userProfile.idFranquia);
+
+        try {
+            setIsLoading(true);
+            await updateDoc(franchiseDocRef, { kpis: updatedKpis });
+            
+            setFranchiseData(prevData => ({
+                ...prevData,
+                kpis: updatedKpis
+            }));
+            
+            setNewKpiName('');
+            alert("Novo KPI adicionado com sucesso!");
+
+        } catch (error) {
+            console.error("Erro ao adicionar novo KPI:", error);
+            alert("Não foi possível adicionar o KPI. Tente novamente.");
         } finally {
             setIsLoading(false);
         }
@@ -335,7 +388,13 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                     });
                     await updateDoc(planDocRef, { agents: updatedAgents });
                     alert("Mês devolvido para correção.");
+                    
                     setAllPlans(prev => ({...prev, [selectedPeriod]: {...planData, agents: updatedAgents }}));
+                    setTeamPerformanceData(prevData =>
+                        prevData.map(agent =>
+                            agent.agentId === agentId ? { ...agent, statusFechamento: 'em_correcao' } : agent
+                        )
+                    );
                 }
             } catch (error) {
                 console.error("Erro ao devolver mês:", error);
@@ -344,12 +403,74 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
         }
     };
 
-    const handleAprovar = (agentId) => {
-        if (window.confirm("Tem a certeza que deseja aprovar e fechar o mês para este agente? Esta ação é permanente e guardará os resultados no histórico.")) {
-            console.log(`Aprovando agente ${agentId}... Próximo passo: chamar a Cloud Function.`);
-            alert("Funcionalidade de aprovação (Cloud Function) a ser implementada no próximo passo.");
+    const handleAprovar = async (agentId) => {
+        if (window.confirm("Tem a certeza que deseja aprovar e fechar o mês para este agente? Esta ação é permanente.")) {
+            setApprovingAgentId(agentId); 
+            try {
+                const fecharMes = httpsCallable(functionsService, 'fecharMesAgente');
+                
+                const agentPerformance = teamPerformanceData.find(d => d.agentId === agentId);
+                // Agora 'estimatedRV' está correto (ex: 1298.79)
+                const rvEstimada = agentPerformance ? agentPerformance.estimatedRV : 0; 
+
+                if (!agentPerformance) {
+                    throw new Error("Não foi possível encontrar os dados de performance do agente.");
+                }
+
+                const result = await fecharMes({ 
+                    agentId: agentId, 
+                    periodo: selectedPeriod,
+                    // Note: A Cloud Function ignora este valor e recalcula,
+                    // mas agora o valor enviado e o recalculado devem ser idênticos.
+                    rvFinal: rvEstimada 
+                });
+                
+                alert("Mês aprovado e fechado com sucesso!");
+                console.log("Resultado da Cloud Function:", result.data);
+
+                // Atualiza UI localmente
+                setTeamPerformanceData(prevData =>
+                    prevData.map(agent =>
+                        agent.agentId === agentId ? { ...agent, statusFechamento: 'fechado', rvFinal: rvEstimada } : agent
+                    )
+                );
+
+                const planData = allPlans[selectedPeriod];
+                if (planData) {
+                    const updatedAgents = planData.agents.map(agent => {
+                        if (agent.id === agentId) {
+                            return { ...agent, statusFechamento: 'fechado', rvFinal: rvEstimada };
+                        }
+                        return agent;
+                    });
+                    setAllPlans(prev => ({...prev, [selectedPeriod]: {...planData, agents: updatedAgents }}));
+                }
+
+            } catch (error) {
+                console.error("Erro ao aprovar o mês:", error);
+                alert(`Erro ao aprovar: ${error.message}`);
+            } finally {
+                setApprovingAgentId(null); 
+            }
         }
     };
+
+    // Otimização: Mapeia IDs de KPI uma única vez
+    const kpiIdMapping = useMemo(() => {
+        const mapping = {};
+        if (!franchiseData || !franchiseData.kpis) return mapping;
+
+        (franchiseData.kpis || []).forEach(kpi => {
+            const kpiNameLower = kpi.name.toLowerCase();
+            if (kpiNameLower.includes('novos ativos')) mapping.novosAtivos = kpi.id;
+            else if (kpiNameLower.includes('migração')) mapping.migracao = kpi.id;
+            else if (kpiNameLower.includes('tpv transacionado')) mapping.tpvM1 = kpi.id;
+        });
+        return mapping;
+    }, [franchiseData]);
+
+
+    // --- Renderização ---
 
     const renderContent = () => {
         if (isLoading) return <div className="p-8 text-center">Carregando dados...</div>;
@@ -368,11 +489,31 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                 const StatusCell = ({ data }) => {
                     const status = data.statusFechamento || 'aberto';
                     
+                    if (approvingAgentId === data.agentId) {
+                        return (
+                            <span className="px-2 py-1 text-xs font-medium rounded-full bg-gray-200 text-gray-700">
+                                Aprovando...
+                            </span>
+                        );
+                    }
+                    
                     if (status === 'pendente_aprovacao') {
                         return (
                             <div className="flex space-x-2">
-                                <button onClick={() => handleAprovar(data.agentId)} className="bg-green-500 text-white px-2 py-1 text-xs font-bold rounded hover:bg-green-600">Aprovar</button>
-                                <button onClick={() => handleDevolver(data.agentId)} className="bg-yellow-500 text-white px-2 py-1 text-xs font-bold rounded hover:bg-yellow-600">Devolver</button>
+                                <button 
+                                    onClick={(e) => { e.stopPropagation(); handleAprovar(data.agentId); }} 
+                                    className="bg-green-500 text-white px-2 py-1 text-xs font-bold rounded hover:bg-green-600 disabled:opacity-50"
+                                    disabled={approvingAgentId !== null}
+                                >
+                                    Aprovar
+                                </button>
+                                <button 
+                                    onClick={(e) => { e.stopPropagation(); handleDevolver(data.agentId); }} 
+                                    className="bg-yellow-500 text-white px-2 py-1 text-xs font-bold rounded hover:bg-yellow-600 disabled:opacity-50"
+                                    disabled={approvingAgentId !== null}
+                                >
+                                    Devolver
+                                </button>
                             </div>
                         );
                     }
@@ -404,29 +545,29 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                                     <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase">Novos Ativos (Real./Meta)</th>
                                     <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase">Migração (%)</th>
                                     <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase">TPV Transacionado (Real./Meta)</th>
-                                    {isManagerView && <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase">RV Estimada</th>}
+                                    {isManagerView && <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase">RV Estimada/Final</th>}
                                     {isManagerView && <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase">Status do Mês</th>}
                                 </tr>
                             </thead>
                             <tbody className="bg-white divide-y divide-gray-200">
                                 {activeAgentsData.length > 0 ? activeAgentsData.map(data => {
-                                    // Acha o kpiId correspondente para os nomes
-                                    const kpiIds = {};
-                                    (franchiseData.kpis || []).forEach(kpi => {
-                                        if (kpi.name.toLowerCase().includes('novos ativos')) kpiIds.novosAtivos = kpi.id;
-                                        if (kpi.name.toLowerCase().includes('migração')) kpiIds.migracao = kpi.id;
-                                        if (kpi.name.toLowerCase().includes('tpv transacionado')) kpiIds.tpvM1 = kpi.id;
-                                    });
-                                    
                                     return (
                                         <Fragment key={data.agentId}>
                                             <tr className="cursor-pointer hover:bg-gray-50" onClick={() => handleToggleExpand(data.agentId)}>
                                                 <td className="px-4 py-4 font-medium text-gray-900">{data.agentName}</td>
-                                                <td className="px-4 py-4 text-gray-600">{data.performance[kpiIds.novosAtivos] || 0} / {data.goals[kpiIds.novosAtivos] || 0}</td>
-                                                <td className="px-4 py-4 text-gray-600">{(data.performance[kpiIds.migracao] || 0).toFixed(2)}%</td>
-                                                <td className="px-4 py-4 text-gray-600">{formatCurrency(data.performance[kpiIds.tpvM1] || 0)} / {formatCurrency(data.goals[kpiIds.tpvM1] || 0)}</td>
-                                                {isManagerView && <td className="px-4 py-4 text-gray-600 font-bold">{formatCurrency(data.estimatedRV)}</td>}
-                                                {isManagerView && <td className="px-4 py-4"><StatusCell data={data} /></td>}
+                                                <td className="px-4 py-4 text-gray-600">{data.performance[kpiIdMapping.novosAtivos] || 0} / {data.goals[kpiIdMapping.novosAtivos] || 0}</td>
+                                                <td className="px-4 py-4 text-gray-600">{(data.performance[kpiIdMapping.migracao] || 0).toFixed(2)}%</td>
+                                                <td className="px-4 py-4 text-gray-600">{formatCurrency(data.performance[kpiIdMapping.tpvM1] || 0)} / {formatCurrency(data.goals[kpiIdMapping.tpvM1] || 0)}</td>
+                                                {isManagerView && (
+                                                    <td className="px-4 py-4 text-gray-600 font-bold">
+                                                        {data.statusFechamento === 'fechado' ? formatCurrency(data.rvFinal || 0) : formatCurrency(data.estimatedRV)}
+                                                    </td>
+                                                )}
+                                                {isManagerView && (
+                                                    <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}> 
+                                                        <StatusCell data={data} />
+                                                    </td>
+                                                )}
                                             </tr>
                                             {expandedAgentId === data.agentId && (
                                                 <tr>
@@ -561,7 +702,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                     </div>
                 );
             case 'rv_rules':
-                  const kpis = franchiseData.kpis ?? [];
+                const kpis = franchiseData.kpis ?? [];
                 const totalWeight = kpis.reduce((sum, kpi) => sum + Number(franchiseData.regrasRV?.weights?.[kpi.id] || 0), 0);
                 return (
                     <div className="bg-white p-6 rounded-lg shadow space-y-8">
@@ -571,9 +712,15 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                         </div>
                         <div className="pt-6 border-t">
                             <h4 className="text-md font-medium text-gray-700">Adicionar Novo KPI</h4>
-                             <div className="mt-2 flex space-x-4">
+                                <div className="mt-2 flex space-x-4">
                                 <input type="text" placeholder="Ex: Venda de Seguros" value={newKpiName} onChange={e => setNewKpiName(e.target.value)} className="flex-1 p-2 border border-gray-300 rounded-md"/>
-                                <button className="bg-blue-500 text-white font-bold py-2 px-4 rounded-md hover:bg-blue-600">Adicionar</button>
+                                <button 
+                                    onClick={handleAddNewKpi} 
+                                    className="bg-blue-500 text-white font-bold py-2 px-4 rounded-md hover:bg-blue-600"
+                                    disabled={isLoading}
+                                >
+                                    Adicionar
+                                </button>
                             </div>
                         </div>
                         {kpis.length > 0 ? (

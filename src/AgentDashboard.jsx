@@ -4,25 +4,12 @@ import { doc, getDoc, collection, query, where, onSnapshot, addDoc, updateDoc, d
 import { CurrencyInput } from './CurrencyInput';
 import { formatCurrency } from './utils/formatters';
 
-// Ícones
-const LogoutIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
-);
-
-const TrashIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400 hover:text-red-600"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
-);
-
-// NOVO: Função para determinar a cor da barra de progresso
-const getMigrationBarColor = (percentage) => {
-    if (percentage >= 100) return 'bg-green-500'; // Verde
-    if (percentage >= 50) return 'bg-blue-500';    // Azul
-    if (percentage > 30) return 'bg-yellow-500'; // Amarelo
-    return 'bg-red-500';                        // Vermelho
-};
-
-// Função para gerar o mês atual como padrão inicial
+// --- Ícones e Funções Utilitárias ---
+const LogoutIcon = () => ( <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg> );
+const TrashIcon = () => ( <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400 hover:text-red-600"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg> );
+const getMigrationBarColor = (percentage) => { if (percentage >= 100) return 'bg-green-500'; if (percentage >= 50) return 'bg-blue-500'; if (percentage > 30) return 'bg-yellow-500'; return 'bg-red-500'; };
 const getDefaultPeriod = () => new Date().toISOString().slice(0, 7);
+// --- FIM DOS ÍCONES ---
 
 export default function AgentDashboard({ user, userProfile, handleLogout }) {
     const [activeTab, setActiveTab] = useState('dashboard');
@@ -32,11 +19,13 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
     const [franchiseData, setFranchiseData] = useState(null);
     const [m0Clients, setM0Clients] = useState([]);
     const [m1Clients, setM1Clients] = useState([]);
+    
     const [newClientName, setNewClientName] = useState('');
     const [newClientAgreedTPV, setNewClientAgreedTPV] = useState(0);
     const [performance, setPerformance] = useState({});
     const [calculatedRV, setCalculatedRV] = useState({ total: 0, kpis: {} });
 
+    // useEffect para buscar os dados (Plano, Franquia, Clientes M0/M1)
     useEffect(() => {
         if (!user || !userProfile || !userProfile.idFranquia) {
             setIsLoading(false);
@@ -48,11 +37,11 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
         const agentId = user.uid;
         
         const date = new Date(`${selectedPeriod}-02T00:00:00`);
-        const currentMonth = date.toISOString().slice(0, 7);
         date.setMonth(date.getMonth() - 1);
         const previousMonth = date.toISOString().slice(0, 7);
 
-        const planDocRef = doc(db, "franquias", franchiseId, "planos", currentMonth);
+        // Busca o plano do agente para o período
+        const planDocRef = doc(db, "franquias", franchiseId, "planos", selectedPeriod);
         const unsubscribePlan = onSnapshot(planDocRef, (planSnap) => {
             if (planSnap.exists()) {
                 const allAgentPlans = planSnap.data().agents || [];
@@ -63,10 +52,11 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                     setAgentPlan(userProfile);
                 }
             } else {
-                 setAgentPlan(userProfile);
+                setAgentPlan(userProfile);
             }
         });
 
+        // Busca dados gerais da franquia (KPIs, Regras)
         const fetchInitialData = async () => {
             try {
                 const franchiseDocRef = doc(db, "franquias", franchiseId);
@@ -83,16 +73,20 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
 
         fetchInitialData();
 
-        const m0Query = query(collection(db, "clientes"), where("agentId", "==", agentId), where("monthAdded", "==", currentMonth));
+        // Busca clientes M0 (do período selecionado)
+        const m0Query = query(collection(db, "clientes"), where("agentId", "==", agentId), where("monthAdded", "==", selectedPeriod));
         const unsubscribeM0 = onSnapshot(m0Query, (querySnapshot) => {
             setM0Clients(querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
         });
 
+        // Busca clientes M1 (do mês anterior)
         const m1Query = query(collection(db, "clientes"), where("agentId", "==", agentId), where("monthAdded", "==", previousMonth), where("status", "==", "active"));
         const unsubscribeM1 = onSnapshot(m1Query, (querySnapshot) => {
             setM1Clients(querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
         });
 
+        
+        // Limpa os listeners ao desmontar ou trocar o período
         return () => {
             unsubscribePlan();
             unsubscribeM0();
@@ -100,30 +94,32 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
         };
     }, [user, userProfile, selectedPeriod]);
     
+    // useEffect para calcular a ESTIMATIVA de RV
     useEffect(() => {
+        // Só calcula se os dados necessários existirem
         if (!agentPlan || !franchiseData || !franchiseData.kpis || !franchiseData.regrasRV) {
+            setPerformance({});
+            setCalculatedRV({ total: 0, kpis: {} });
             return;
         }
 
+        // --- Início da Lógica de Cálculo ---
         const { kpis, regrasRV } = franchiseData;
         
-        // 1. CALCULAR MÉTRICAS BASE
+        // Métricas Brutas
         const totalNovosAtivos = m0Clients.filter(client => client.status === 'active').length;
         const totalTpvTransacionado = m1Clients.reduce((sum, client) => sum + (client.currentTPV || 0), 0);
         const totalTpvAcordado = m1Clients.reduce((sum, client) => sum + (client.agreedTPV || 0), 0);
-
-        // 2. CALCULAR AS DUAS VERSÕES DA "MIGRAÇÃO"
+        
         const individualSuccessTrigger = regrasRV.triggers?.migracao_individual || 70;
         const successfulMigratorsCount = m1Clients.filter(c => {
             if (c.agreedTPV <= 0) return false;
             const individualMigration = ((c.currentTPV || 0) / c.agreedTPV) * 100;
             return individualMigration >= individualSuccessTrigger;
         }).length;
-
-        // Valor para EXIBIÇÃO no "Atingimento" do Dashboard (ex: 4 de 7 clientes = 57.14%)
         const migracaoDisplayPercent = m1Clients.length > 0 ? (successfulMigratorsCount / m1Clients.length) * 100 : 0;
-        
-        // 3. ATRIBUIR VALORES AO ESTADO DE PERFORMANCE
+
+        // Performance (Realizado)
         const newPerformance = {};
         kpis.forEach(kpi => {
             if (kpi.name.toLowerCase().includes('novos ativos')) {
@@ -131,84 +127,68 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
             } else if (kpi.name.toLowerCase().includes('tpv transacionado')) {
                 newPerformance[kpi.id] = totalTpvTransacionado;
             } else if (kpi.name.toLowerCase().includes('migração')) {
-                // Para a migração, o valor de performance (exibição) é a % de clientes
                 newPerformance[kpi.id] = migracaoDisplayPercent;
             }
         });
         setPerformance(newPerformance);
 
-        // 4. CALCULAR A RV USANDO AS REGRAS CORRETAS
+        // Cálculo do RV
         const { rvReference, goals } = agentPlan;
-        const safeGoals = goals || {};
+        const safeGoals = goals || {}; // Garante que 'goals' exista
         const weights = regrasRV.weights || {};
         const triggers = regrasRV.triggers || {};
         const caps = regrasRV.caps || {};
+
         const newCalculatedRV = { total: 0, kpis: {} };
 
-        // --- INÍCIO DA CORREÇÃO DEFINITIVA ---
         kpis.forEach(kpi => {
             const kpiId = kpi.id;
-            const goal = safeGoals[kpi.id] || 0;                 // Meta: 12, 300k, ou 70
-            const achievedForDisplay = newPerformance[kpi.id] || 0;  // Realizado: 9, 186k, ou 57.14
-            const kpiTrigger = triggers[kpiId] || 0;           // Gatilho: ex: 50 (%)
-            const kpiCap = caps[kpiId] || 100;                 // Teto: ex: 100 ou 120 (%)
-
+            const goal = safeGoals[kpi.id] || 0;
+            const achievedForDisplay = newPerformance[kpi.id] || 0;
+            const kpiTrigger = triggers[kpiId] || 0;
+            const kpiCap = caps[kpiId] || 100;
+            
             let finalPercentForRV = 0;
             let percentualDeAtingimentoParaExibicao = 0;
             let percentualParaCalculoDeRV = 0;
             let valorParaChecarGatilho = 0;
 
             if (kpi.name.toLowerCase().includes('migração')) {
-                // 1. Percentual para CÁLCULO DE RV (Atingimento da Meta)
-                // (57.14 / 70) * 100 = 81.63%
                 percentualParaCalculoDeRV = goal > 0 ? (achievedForDisplay / goal) * 100 : 0;
-                
-                // 2. Percentual para EXIBIÇÃO NA TELA
-                // (Mostra o "Realizado")
-                percentualDeAtingimentoParaExibicao = achievedForDisplay; // 57.14%
-
-                // 3. Valor para CHECAR O GATILHO
-                // (O gatilho de 50% é sobre o "Realizado")
-                valorParaChecarGatilho = achievedForDisplay; // 57.14%
-
+                percentualDeAtingimentoParaExibicao = achievedForDisplay;
+                valorParaChecarGatilho = achievedForDisplay;
             } else {
-                // 1. Percentual para CÁLCULO DE RV (Atingimento da Meta)
-                // (9 / 12) * 100 = 75%
                 percentualParaCalculoDeRV = goal > 0 ? (achievedForDisplay / goal) * 100 : 0;
-                
-                // 2. Percentual para EXIBIÇÃO NA TELA
-                // (Mostra o "Atingimento da Meta")
-                percentualDeAtingimentoParaExibicao = percentualParaCalculoDeRV; // 75%
-
-                // 3. Valor para CHECAR O GATILHO
-                // (O gatilho de 50% é sobre o "Atingimento da Meta")
-                valorParaChecarGatilho = percentualParaCalculoDeRV; // 75%
+                percentualDeAtingimentoParaExibicao = percentualParaCalculoDeRV;
+                valorParaChecarGatilho = percentualParaCalculoDeRV;
             }
-            
-            // Agora, a lógica de pagamento é a mesma
-            // Ex Migração: if (57.14 >= 50) -> TRUE
-            // Ex Ativos:   if (75 >= 50) -> TRUE
+
             if (valorParaChecarGatilho >= kpiTrigger) {
-                // Paga o Atingimento da Meta (81.63% ou 75%), limitado ao Teto
                 finalPercentForRV = Math.min(percentualParaCalculoDeRV, kpiCap);
             }
-            // Se não, finalPercentForRV continua 0
+
+            const rvValue = ((rvReference || 0) * (weights[kpiId] / 100)) * (finalPercentForRV / 100);
             
-            const rvValue = (rvReference * (weights[kpiId] / 100)) * (finalPercentForRV / 100);
-            
-            newCalculatedRV.kpis[kpiId] = { value: rvValue, percent: percentualDeAtingimentoParaExibicao.toFixed(2) };
+            newCalculatedRV.kpis[kpi.id] = { value: rvValue, percent: percentualDeAtingimentoParaExibicao.toFixed(2) };
             newCalculatedRV.total += rvValue;
         });
-        // --- FIM DA CORREÇÃO DEFINITIVA ---
 
         setCalculatedRV(newCalculatedRV);
+        // --- Fim da Lógica de Cálculo ---
 
     }, [m0Clients, m1Clients, agentPlan, franchiseData]);
 
+    // --- Funções 'Handle' (Ações do Usuário) ---
+
+    // VERSÃO FINAL: Submete para aprovação do Franqueado
     const handleSubmitForApproval = async () => {
         if (!window.confirm("Tem a certeza que deseja submeter este mês para aprovação? Após a submissão, não poderá fazer mais alterações até que o seu franqueado aprove ou devolva para correção.")) {
             return;
         }
+        
+        // Pega o valor da estimativa atual para salvar junto (útil para o franqueado ver)
+        const estimativaAtual = calculatedRV.total;
+
         const planDocRef = doc(db, "franquias", userProfile.idFranquia, "planos", selectedPeriod);
         try {
             const planSnap = await getDoc(planDocRef);
@@ -216,7 +196,12 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                 const planData = planSnap.data();
                 const updatedAgents = planData.agents.map(agent => {
                     if (agent.id === user.uid) {
-                        return { ...agent, statusFechamento: 'pendente_aprovacao', comentarioRevisao: '' };
+                        return { 
+                            ...agent, 
+                            statusFechamento: 'pendente_aprovacao', 
+                            comentarioRevisao: '',
+                            rvEstimadoSubmetido: estimativaAtual // Salvamos a estimativa no momento do envio
+                        };
                     }
                     return agent;
                 });
@@ -228,7 +213,7 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
             alert("Não foi possível submeter o mês para aprovação.");
         }
     };
-
+    
     const handleAddM0Client = async (e) => {
         e.preventDefault();
         if (!newClientName || newClientAgreedTPV <= 0) {
@@ -252,7 +237,7 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
             console.error("Erro ao credenciar cliente: ", error);
         }
     };
-
+    
     const handleToggleActivation = async (clientId, currentStatus) => {
         const clientDocRef = doc(db, "clientes", clientId);
         const newStatus = currentStatus === 'active' ? 'pending' : 'active';
@@ -262,7 +247,7 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
             console.error("Erro ao ativar cliente: ", error);
         }
     };
-
+    
     const handleM1TpvChange = async (clientId, value) => {
         const clientDocRef = doc(db, "clientes", clientId);
         try {
@@ -271,7 +256,7 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
             console.error("Erro ao atualizar TPV: ", error);
         }
     };
-
+    
     const handleDeleteClient = async (clientId) => {
         if (window.confirm("Tem a certeza que deseja excluir este cliente?")) {
             try {
@@ -282,57 +267,113 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
         }
     };
 
+    // --- Renderização do Conteúdo da Aba Ativa ---
     const renderContent = () => {
+        // Estados de Carregamento / Erro
         if (isLoading && !agentPlan) return <div className="text-center p-8">Carregando dados do agente...</div>;
         if (!agentPlan || !franchiseData) return <div className="text-center p-8 text-red-600">Não foi possível carregar os dados do plano ou da franquia. Contacte o seu franqueado.</div>;
         
+        // Verifica se o mês está fechado para edição
         const isMonthClosedForEditing = agentPlan.statusFechamento === 'pendente_aprovacao' || agentPlan.statusFechamento === 'fechado';
         
         switch (activeTab) {
-            case 'dashboard':
+            
+            // --- ABA DASHBOARD (Opção 2: Com Detalhamento) ---
+            case 'dashboard': {
+                
+                // 1. Verifica o status do plano carregado
+                const status = agentPlan?.statusFechamento;
+                const isClosed = status === 'fechado';
+
+                // 2. Decide qual valor e título exibir
+                const rvToShow = isClosed ? (agentPlan?.rvFinal || 0) : calculatedRV.total;
+                const titleText = isClosed ? "Sua RV Fechada" : "Sua RV Estimada";
+                
+                // 3. Define a cor do card
+                const cardColor = isClosed ? "bg-gray-600" : "bg-green-600";
+                const titleColor = isClosed ? "text-gray-200" : "text-green-200";
+
                 return (
                     <div className="space-y-8">
-                        <div className="bg-green-600 text-white p-6 rounded-lg shadow-lg text-center">
-                            <h2 className="text-lg font-semibold text-green-200">Sua RV Estimada ({selectedPeriod})</h2>
-                            <p className="text-5xl font-bold mt-2">{calculatedRV.total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
+                        {/* Card Principal */}
+                        <div className={`${cardColor} text-white p-6 rounded-lg shadow-lg text-center`}>
+                            <h2 className={`text-lg font-semibold ${titleColor}`}>{titleText} ({selectedPeriod})</h2>
+                            <p className="text-5xl font-bold mt-2">
+                                {rvToShow.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                            </p>
+                            {isClosed && (
+                                <p className="text-sm text-gray-200 mt-2">(Este é o valor final aprovado pelo seu franqueado)</p>
+                            )}
                         </div>
-                        <div className="bg-white p-6 rounded-lg shadow">
-                            <h3 className="font-bold text-lg text-gray-800 mb-4">Detalhamento da RV</h3>
-                            <div className="space-y-4">
-                                {(franchiseData.kpis || []).map(kpi => {
-                                    const isMigracao = kpi.name.toLowerCase().includes('migração');
-                                    const isTpv = kpi.name.toLowerCase().includes('tpv transacionado');
-                                    const metaValue = agentPlan.goals?.[kpi.id] || 0;
-                                    const realizadoValue = performance[kpi.id] || 0;
-                                    const formatMeta = () => {
-                                        if (isMigracao) return `${metaValue}%`; // MOSTRA A META DE MIGRAÇÃO
-                                        if (isTpv) return formatCurrency(metaValue);
-                                        return metaValue;
-                                    };
-                                    const formatRealizado = () => {
-                                        if (isMigracao) return `${realizadoValue.toFixed(2)}%`;
-                                        if (isTpv) return formatCurrency(realizadoValue);
-                                        return realizadoValue;
-                                    };
-                                    return (
-                                        <div key={kpi.id}>
-                                            <div className="flex justify-between font-medium">
-                                                <p>{kpi.name} ({franchiseData.regrasRV?.weights?.[kpi.id] || 0}%)</p>
-                                                <p>{(calculatedRV.kpis[kpi.id]?.value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
+                        
+                        {/* --- MUDANÇA: Card de Detalhamento Re-adicionado --- */}
+                        {/* Só exibe o detalhamento se o mês NÃO estiver fechado */}
+                        {!isClosed && (
+                            <div className="bg-white p-6 rounded-lg shadow">
+                                <h3 className="font-bold text-lg text-gray-800 mb-4">Detalhamento da RV Estimada</h3>
+                                <div className="space-y-4">
+                                    {(franchiseData.kpis || []).map(kpi => {
+                                        const isMigracao = kpi.name.toLowerCase().includes('migração');
+                                        const isTpv = kpi.name.toLowerCase().includes('tpv transacionado');
+                                        // Garante que agentPlan.goals exista antes de tentar acessá-lo
+                                        const metaValue = agentPlan.goals?.[kpi.id] || 0;
+                                        const realizadoValue = performance[kpi.id] || 0;
+                                        
+                                        const formatMeta = () => {
+                                            if (isMigracao) return `${metaValue}%`;
+                                            if (isTpv) return formatCurrency(metaValue);
+                                            return metaValue;
+                                        };
+                                        const formatRealizado = () => {
+                                            if (isMigracao) return `${realizadoValue.toFixed(2)}%`;
+                                            if (isTpv) return formatCurrency(realizadoValue);
+                                            return realizadoValue;
+                                        };
+                                        
+                                        return (
+                                            <div key={kpi.id}>
+                                                <div className="flex justify-between font-medium">
+                                                    <p>{kpi.name} ({franchiseData.regrasRV?.weights?.[kpi.id] || 0}%)</p>
+                                                    <p>{(calculatedRV.kpis[kpi.id]?.value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
+                                                </div>
+                                                <p className="text-sm text-gray-500">Atingimento: {calculatedRV.kpis[kpi.id]?.percent || '0.00'}%</p>
+                                                <p className="text-sm text-gray-500">Meta: {formatMeta()} | Realizado: {formatRealizado()}</p>
                                             </div>
-                                            {/* Agora o "Atingimento" de Migração mostra o Realizado (57.14%) */}
-                                            <p className="text-sm text-gray-500">Atingimento: {calculatedRV.kpis[kpi.id]?.percent || '0.00'}%</p>
-                                            <p className="text-sm text-gray-500">Meta: {formatMeta()} | Realizado: {formatRealizado()}</p>
-                                        </div>
-                                    );
-                                })}
+                                        );
+                                    })}
+                                </div>
                             </div>
+                        )}
+                        {/* --- FIM DA MUDANÇA --- */}
+
+
+                        {/* Card de Ajuda */}
+                        <div className="bg-white p-6 rounded-lg shadow text-gray-700">
+                            <h3 className="font-bold text-lg text-gray-800 mb-2">Como esta RV é calculada?</h3>
+                            <p>
+                                Seu Resultado Variável (RV) é calculado automaticamente com base nos KPIs:
+                            </p>
+                            <ul className="list-disc list-inside mt-2 space-y-1">
+                                <li>
+                                    <strong>Novos Ativos:</strong> Baseado nos novos clientes credenciados e ativados neste mês (ver aba "Clientes M0").
+                                </li>
+                                <li>
+                                    <strong>TPV Transacionado e Migração:</strong> Baseado no TPV que você preenche para os clientes do mês anterior (ver aba "Clientes M1").
+                                </li>
+                            </ul>
+                            <p className="mt-2">
+                                O valor final depende das metas e regras definidas pelo seu franqueado para o período selecionado.
+                            </p>
                         </div>
                     </div>
                 );
+            } // Fim do 'case: dashboard'
+
+            // --- ABA CLIENTES M0 ---
             case 'm0_clients':
-                 return (
+                return (
                     <div className="space-y-8">
+                        {/* Formulário de Adição */}
                         <div className={`bg-white p-6 rounded-lg shadow ${isMonthClosedForEditing ? 'opacity-50' : ''}`}>
                             <h3 className="font-bold text-lg text-gray-800 mb-4">Adicionar Novo Cliente (Mês: {selectedPeriod})</h3>
                             <form onSubmit={handleAddM0Client} className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
@@ -346,12 +387,13 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                                 </fieldset>
                             </form>
                         </div>
+                        {/* Lista de Clientes M0 */}
                         <div className="bg-white p-6 rounded-lg shadow">
                             <h3 className="font-bold text-lg text-gray-800 mb-4">Clientes do Mês Atual (M0)</h3>
                             <ul className="divide-y divide-gray-200">
                                 {m0Clients.map(client => (
                                     <li key={client.id} className="py-4 flex items-center justify-between">
-                                        <div><p className="font-medium text-gray-900">{client.name}</p><p className="text-sm text-gray-500">TPV Acordado: {(client.agreedTPV || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p></div>
+                                        <div><p className="font-medium text-gray-900">{client.name}</p><p className="text-sm text-gray-500">TPV Acordado: {formatCurrency(client.agreedTPV)}</p></div>
                                         <div className="flex items-center space-x-4">
                                             <div className="flex items-center">
                                                 <label htmlFor={`ativado-${client.id}`} className="mr-2 text-sm font-medium text-gray-700">Ativado:</label>
@@ -365,6 +407,8 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                         </div>
                     </div>
                 );
+
+            // --- ABA CLIENTES M1 ---
             case 'm1_clients':
                 return (
                     <div className="bg-white p-6 rounded-lg shadow">
@@ -372,11 +416,11 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                         <div className="space-y-6">
                             {(m1Clients || []).map(client => {
                                 const migrationPercent = client.agreedTPV > 0 ? ((client.currentTPV || 0) / client.agreedTPV) * 100 : 0;
-                                const barColorClass = getMigrationBarColor(migrationPercent); // Aplica a nova função de cor
+                                const barColorClass = getMigrationBarColor(migrationPercent);
                                 return (
                                     <div key={client.id} className={`border-b pb-4 ${isMonthClosedForEditing ? 'opacity-50' : ''}`}>
                                         <div className="flex justify-between items-start">
-                                            <div><p className="font-medium text-gray-900">{client.name}</p><p className="text-sm text-gray-500">TPV Acordado: {(client.agreedTPV || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p></div>
+                                            <div><p className="font-medium text-gray-900">{client.name}</p><p className="text-sm text-gray-500">TPV Acordado: {formatCurrency(client.agreedTPV)}</p></div>
                                             <div className="w-1/3">
                                                 <label className="block text-sm font-medium text-gray-700">TPV Transacionado (R$)</label>
                                                 <CurrencyInput
@@ -387,6 +431,7 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                                                     }}
                                                     onBlur={(e) => {
                                                         if (isMonthClosedForEditing) return;
+                                                        // O onBlur é o que salva no DB
                                                         const numericValue = parseFloat(e.target.value.replace(/\D/g, '')) / 100 || 0;
                                                         handleM1TpvChange(client.id, numericValue);
                                                     }}
@@ -406,18 +451,21 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                         </div>
                     </div>
                 );
-            case 'history':
-                return <div>Histórico (em breve)</div>
+            
+            // A aba 'history' foi removida
+            
             default: return null;
         }
     };
     
+    // --- Componente de Gerenciamento de Fechamento ---
     const MonthClosingManager = () => {
-        if(!agentPlan) return null;
+        if(!agentPlan) return null; // Não mostra nada se o plano não estiver carregado
+        
         const status = agentPlan.statusFechamento || 'aberto';
         let statusText = "Em Aberto";
         let statusColor = "bg-blue-100 text-blue-800";
-
+        
         if (status === 'pendente_aprovacao') {
             statusText = "Pendente de Aprovação";
             statusColor = "bg-yellow-100 text-yellow-800";
@@ -434,12 +482,16 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                 <div className="mb-4 sm:mb-0">
                     <span className="font-bold text-gray-700">Status do Mês: </span>
                     <span className={`px-3 py-1 text-sm font-medium rounded-full ${statusColor}`}>{statusText}</span>
+                    
+                    {/* Mostra comentário de revisão se houver */}
                     {agentPlan?.comentarioRevisao && (status === 'aberto' || status === 'em_correcao') && (
                         <p className="text-sm text-red-600 mt-2">
                             <span className="font-bold">Correção Solicitada:</span> {agentPlan.comentarioRevisao}
                         </p>
                     )}
                 </div>
+                
+                {/* Mostra o botão de submeter apenas se o status permitir */}
                 {(status === 'aberto' || status === 'em_correcao') && (
                     <button 
                         onClick={handleSubmitForApproval}
@@ -452,8 +504,10 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
         );
     };
 
+    // --- JSX Principal do Componente ---
     return (
         <div className="min-h-screen bg-gray-100 font-sans">
+            {/* Header */}
             <header className="bg-white shadow-sm">
                 <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
                     <div>
@@ -466,15 +520,19 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                     </button>
                 </div>
             </header>
+            
+            {/* Navegação por Abas (Simplificada) */}
             <div className="bg-white shadow-sm">
                 <nav className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 flex space-x-8 overflow-x-auto">
                     <button onClick={() => setActiveTab('dashboard')} className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${activeTab === 'dashboard' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Dashboard RV</button>
                     <button onClick={() => setActiveTab('m0_clients')} className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${activeTab === 'm0_clients' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Clientes M0</button>
                     <button onClick={() => setActiveTab('m1_clients')} className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${activeTab === 'm1_clients' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Clientes M1</button>
-                    <button onClick={() => setActiveTab('history')} className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${activeTab === 'history' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Histórico</button>
                 </nav>
             </div>
+            
+            {/* Conteúdo Principal */}
             <main className="mx-auto max-w-7xl py-8 px-4 sm:px-6 lg:px-8">
+                {/* Seletor de Período */}
                 <div className="mb-6">
                     <label htmlFor="period-select" className="block text-sm font-medium text-gray-700">Selecione o Mês de Referência:</label>
                     <select 
@@ -483,13 +541,18 @@ export default function AgentDashboard({ user, userProfile, handleLogout }) {
                         onChange={e => setSelectedPeriod(e.target.value)} 
                         className="mt-1 block w-full md:w-1/4 p-2 border border-gray-300 rounded-md bg-white shadow-sm"
                     >
+                        <option value="2025-12">Dezembro / 2025</option>
+                        <option value="2025-11">Novembro / 2025</option>
                         <option value="2025-10">Outubro / 2025</option>
                         <option value="2025-09">Setembro / 2025</option>
                         <option value="2025-08">Agosto / 2025</option>
                     </select>
                 </div>
-
-                <MonthClosingManager />
+                
+                {/* Gerenciador de Fechamento (Status e Botão) */}
+                <MonthClosingManager /> 
+                
+                {/* Conteúdo da Aba */}
                 {renderContent()}
             </main>
         </div>
