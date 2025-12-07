@@ -5,7 +5,8 @@ import { db } from './firebaseConfig';
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { formatCurrency } from './utils/formatters';
 
-export default function AgentPerformanceDetail({ agentId, selectedPeriod }) {
+// ADICIONEI 'franchiseId' NAS PROPS
+export default function AgentPerformanceDetail({ agentId, selectedPeriod, franchiseId }) {
     const [isLoading, setIsLoading] = useState(true);
     const [m0Clients, setM0Clients] = useState([]);
     const [m1Clients, setM1Clients] = useState([]);
@@ -17,18 +18,29 @@ export default function AgentPerformanceDetail({ agentId, selectedPeriod }) {
 
     useEffect(() => {
         const fetchClientDetails = async () => {
-            if (!agentId || !selectedPeriod) return;
+            // Verifica se tem franchiseId também
+            if (!agentId || !selectedPeriod || !franchiseId) return;
 
             setIsLoading(true);
             try {
                 // Buscar clientes M0 (do mês de referência)
-                const m0Query = query(collection(db, "clientes"), where("agentId", "==", agentId), where("monthAdded", "==", currentMonth));
+                // --- CORREÇÃO: Adicionado filtro por franchiseId ---
+                const m0Query = query(collection(db, "clientes"), 
+                    where("franchiseId", "==", franchiseId),
+                    where("agentId", "==", agentId), 
+                    where("monthAdded", "==", currentMonth)
+                );
                 const m0Snapshot = await getDocs(m0Query);
                 setM0Clients(m0Snapshot.docs.map(doc => doc.data()));
 
-                // --- CORREÇÃO APLICADA AQUI ---
                 // Buscar clientes M1 (do mês anterior) que estão com status 'ativo'
-                const m1Query = query(collection(db, "clientes"), where("agentId", "==", agentId), where("monthAdded", "==", previousMonth), where("status", "==", "active"));
+                // --- CORREÇÃO: Adicionado filtro por franchiseId ---
+                const m1Query = query(collection(db, "clientes"), 
+                    where("franchiseId", "==", franchiseId),
+                    where("agentId", "==", agentId), 
+                    where("monthAdded", "==", previousMonth), 
+                    where("status", "==", "active")
+                );
                 const m1Snapshot = await getDocs(m1Query);
                 setM1Clients(m1Snapshot.docs.map(doc => doc.data()));
 
@@ -40,7 +52,7 @@ export default function AgentPerformanceDetail({ agentId, selectedPeriod }) {
         };
 
         fetchClientDetails();
-    }, [agentId, selectedPeriod, currentMonth, previousMonth]);
+    }, [agentId, selectedPeriod, currentMonth, previousMonth, franchiseId]);
 
     if (isLoading) {
         return <div className="p-6 text-center text-gray-500">Carregando detalhes do agente...</div>;

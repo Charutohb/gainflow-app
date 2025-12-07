@@ -31,7 +31,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
 
     const functionsService = getFunctions(db.app);
 
-    // useEffect 1: Busca dados (sem alterações)
+    // useEffect 1: Busca dados da franquia, agentes e planos
     useEffect(() => {
         const fetchData = async () => {
             if (!userProfile || !userProfile.idFranquia) return;
@@ -64,7 +64,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
         fetchData();
     }, [userProfile, selectedPeriod]);
 
-    // useEffect 2: Calcula performance (COM A CORREÇÃO DE LÓGICA)
+    // useEffect 2: Calcula performance (COM LÓGICA DE MIGRAÇÃO CORRIGIDA)
     useEffect(() => {
         const calculateTeamPerformance = async () => {
             const currentPlan = allPlans[selectedPeriod];
@@ -127,8 +127,6 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                 }).length;
                 const migracaoDisplayPercent = agentM1Clients.length > 0 ? (successfulMigratorsCount / agentM1Clients.length) * 100 : 0;
 
-                // (Variável 'migracaoPortfolioPercent' não é mais necessária aqui)
-
                 const performance = {};
                 if (kpis && Array.isArray(kpis)) {
                     kpis.forEach(kpi => {
@@ -157,29 +155,28 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                         let percentualParaCalculoDeRV = 0;
                         let valorParaChecarGatilho = 0;
 
-
-                        // --- INÍCIO DA CORREÇÃO DE LÓGICA ---
                         if (kpi.name.toLowerCase().includes('migração')) {
-                            atingimentoPercent = achievedRealizado; // (realizadoValue)
-                            const kpiTrigger = goal; // (goal é o trigger)
+                            atingimentoPercent = achievedRealizado;
+                            const kpiTrigger = goal; 
+                            
+                            // Calcula pagamento sobre o atingimento da meta
                             percentualParaCalculoDeRV = goal > 0 ? (atingimentoPercent / goal) * 100 : 0; 
-                            valorParaChecarGatilho = atingimentoPercent; // Gatilho é sobre o realizado
+                            valorParaChecarGatilho = atingimentoPercent;
                             
                             if (valorParaChecarGatilho >= kpiTrigger) {
-                                finalPercentForRV = Math.min(percentualParaCalculoDeRV, kpiCap); // <-- PAGA SOBRE O ATINGIMENTO
+                                finalPercentForRV = Math.min(percentualParaCalculoDeRV, kpiCap);
                             }
                         } else {
-                            // Lógica dos outros KPIs
+                            // Outros KPIs
                             atingimentoPercent = goal > 0 ? (achievedRealizado / goal) * 100 : 0;
                             percentualParaCalculoDeRV = atingimentoPercent;
                             valorParaChecarGatilho = atingimentoPercent;
                             const kpiTrigger = regrasRV.triggers?.[kpi.id] || 0;
 
                             if (valorParaChecarGatilho >= kpiTrigger) {
-                                finalPercentForRV = Math.min(percentualParaCalculoDeRV, kpiCap); // <-- PAGA SOBRE O ATINGIMENTO
+                                finalPercentForRV = Math.min(percentualParaCalculoDeRV, kpiCap);
                             }
                         }
-                        // --- FIM DA CORREÇÃO DE LÓGICA ---
                         
                         estimatedRV += (rvReference * ((regrasRV.weights?.[kpi.id] || 0) / 100)) * (finalPercentForRV / 100);
                     });
@@ -190,7 +187,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                     agentName: agent.nome,
                     performance,
                     goals,
-                    estimatedRV, // Agora este valor deve ser 1298.79
+                    estimatedRV,
                     statusFechamento: agentPlan.statusFechamento || 'aberto',
                     rvFinal: agentPlan.rvFinal || null
                 };
@@ -202,8 +199,6 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
         calculateTeamPerformance();
     }, [agentsList, allPlans, franchiseData, selectedPeriod, userProfile.idFranquia]); 
     
-    // --- Funções 'handle' (sem alterações) ---
-
     const handleToggleExpand = (agentId) => {
         setExpandedAgentId(prevId => (prevId === agentId ? null : agentId));
     };
@@ -324,7 +319,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                     }
                 });
                 const planDocRef = doc(db, "franquias", userProfile.idFranquia, "planos", selectedPeriod);
-                await setDoc(planDocRef, planData, { merge: true }); // Usar merge
+                await setDoc(planDocRef, planData, { merge: true }); 
                 alert("Planeamento salvo com sucesso!");
             }
 
@@ -410,7 +405,6 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                 const fecharMes = httpsCallable(functionsService, 'fecharMesAgente');
                 
                 const agentPerformance = teamPerformanceData.find(d => d.agentId === agentId);
-                // Agora 'estimatedRV' está correto (ex: 1298.79)
                 const rvEstimada = agentPerformance ? agentPerformance.estimatedRV : 0; 
 
                 if (!agentPerformance) {
@@ -420,15 +414,12 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                 const result = await fecharMes({ 
                     agentId: agentId, 
                     periodo: selectedPeriod,
-                    // Note: A Cloud Function ignora este valor e recalcula,
-                    // mas agora o valor enviado e o recalculado devem ser idênticos.
                     rvFinal: rvEstimada 
                 });
                 
                 alert("Mês aprovado e fechado com sucesso!");
                 console.log("Resultado da Cloud Function:", result.data);
 
-                // Atualiza UI localmente
                 setTeamPerformanceData(prevData =>
                     prevData.map(agent =>
                         agent.agentId === agentId ? { ...agent, statusFechamento: 'fechado', rvFinal: rvEstimada } : agent
@@ -455,7 +446,6 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
         }
     };
 
-    // Otimização: Mapeia IDs de KPI uma única vez
     const kpiIdMapping = useMemo(() => {
         const mapping = {};
         if (!franchiseData || !franchiseData.kpis) return mapping;
@@ -469,8 +459,6 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
         return mapping;
     }, [franchiseData]);
 
-
-    // --- Renderização ---
 
     const renderContent = () => {
         if (isLoading) return <div className="p-8 text-center">Carregando dados...</div>;
@@ -572,7 +560,12 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                                             {expandedAgentId === data.agentId && (
                                                 <tr>
                                                     <td colSpan={isManagerView ? 6 : 4}>
-                                                        <AgentPerformanceDetail agentId={data.agentId} selectedPeriod={selectedPeriod} />
+                                                        {/* --- CORREÇÃO AQUI: Passando franchiseId --- */}
+                                                        <AgentPerformanceDetail 
+                                                            agentId={data.agentId} 
+                                                            selectedPeriod={selectedPeriod}
+                                                            franchiseId={userProfile.idFranquia}
+                                                        />
                                                     </td>
                                                 </tr>
                                             )}
