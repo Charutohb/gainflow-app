@@ -64,7 +64,7 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
         fetchData();
     }, [userProfile, selectedPeriod]);
 
-    // useEffect 2: Calcula performance (COM LÓGICA DE MIGRAÇÃO CORRIGIDA)
+    // useEffect 2: Calcula performance
     useEffect(() => {
         const calculateTeamPerformance = async () => {
             const currentPlan = allPlans[selectedPeriod];
@@ -159,7 +159,6 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                             atingimentoPercent = achievedRealizado;
                             const kpiTrigger = goal; 
                             
-                            // Calcula pagamento sobre o atingimento da meta
                             percentualParaCalculoDeRV = goal > 0 ? (atingimentoPercent / goal) * 100 : 0; 
                             valorParaChecarGatilho = atingimentoPercent;
                             
@@ -167,7 +166,6 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                                 finalPercentForRV = Math.min(percentualParaCalculoDeRV, kpiCap);
                             }
                         } else {
-                            // Outros KPIs
                             atingimentoPercent = goal > 0 ? (achievedRealizado / goal) * 100 : 0;
                             percentualParaCalculoDeRV = atingimentoPercent;
                             valorParaChecarGatilho = atingimentoPercent;
@@ -199,6 +197,8 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
         calculateTeamPerformance();
     }, [agentsList, allPlans, franchiseData, selectedPeriod, userProfile.idFranquia]); 
     
+    // --- Funções 'handle' ---
+
     const handleToggleExpand = (agentId) => {
         setExpandedAgentId(prevId => (prevId === agentId ? null : agentId));
     };
@@ -560,7 +560,6 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                                             {expandedAgentId === data.agentId && (
                                                 <tr>
                                                     <td colSpan={isManagerView ? 6 : 4}>
-                                                        {/* --- CORREÇÃO AQUI: Passando franchiseId --- */}
                                                         <AgentPerformanceDetail 
                                                             agentId={data.agentId} 
                                                             selectedPeriod={selectedPeriod}
@@ -803,6 +802,18 @@ export default function FranchiseeDashboard({ user, userProfile, handleLogout })
                             <option value="2025-10">Outubro / 2025</option>
                             <option value="2025-11">Novembro / 2025</option>
                             <option value="2025-12">Dezembro / 2025</option>
+                            <option value="2026-01">Janeiro / 2026</option>
+                            <option value="2026-02">Fevereiro / 2026</option>
+                            <option value="2026-03">Março / 2026</option>
+                            <option value="2026-04">Abril / 2026</option>
+                            <option value="2026-05">Maio / 2026</option>
+                            <option value="2026-06">Junho / 2026</option>
+                            <option value="2026-07">Julho / 2026</option>
+                            <option value="2026-08">Agosto / 2026</option>
+                            <option value="2026-09">Setembro / 2026</option>
+                            <option value="2026-10">Outubro / 2026</option>
+                            <option value="2026-11">Novembro / 2026</option>
+                            <option value="2026-12">Dezembro / 2026</option>
                         </select>
                     </div>
                 )}
